@@ -18,8 +18,9 @@ import {
   Wallet,
   XCircle,
 } from 'lucide-react';
-import { api, apiErrorMessage } from '../lib/api';
+import { api, apiErrorMessage, fileUrl } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { useRealtimeVersion } from '../lib/realtime';
 import { useToast } from '../lib/toast';
 import {
   EXPENSE_CATEGORY_LABELS,
@@ -81,6 +82,7 @@ const emptyForm = {
 
 export function ExpensesPage() {
   const { user, capabilities, settings } = useAuth();
+  const realtimeVersion = useRealtimeVersion();
   const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -137,7 +139,7 @@ export function ExpensesPage() {
   useEffect(() => {
     const timer = window.setTimeout(() => load(false), 220);
     return () => window.clearTimeout(timer);
-  }, [status, category, search]);
+  }, [status, category, search, realtimeVersion]);
 
   useEffect(() => {
     load();
@@ -360,7 +362,7 @@ export function ExpensesPage() {
                   </div>
 
                   {expense.attachment_url && (
-                    <a className="expense-attachment" href={`/api/files/${expense.attachment_url}`} target="_blank" rel="noreferrer">
+                    <a className="expense-attachment" href={fileUrl(expense.attachment_url)} target="_blank" rel="noreferrer">
                       <Paperclip size={15} /> عرض المستند الداعم
                     </a>
                   )}

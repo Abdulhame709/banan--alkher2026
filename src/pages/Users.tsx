@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { api, apiErrorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { useRealtimeVersion } from '../lib/realtime';
 import { useToast } from '../lib/toast';
 import { formatDate, formatNumber, ROLE_LABELS } from '../lib/format';
 import {
@@ -45,6 +46,7 @@ const ROLE_DESCRIPTIONS: Record<Role, string> = {
 
 export function UsersPage() {
   const { user: currentUser, refresh } = useAuth();
+  const realtimeVersion = useRealtimeVersion();
   const toast = useToast();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
@@ -91,7 +93,7 @@ export function UsersPage() {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [realtimeVersion]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();

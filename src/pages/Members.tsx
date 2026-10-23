@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { api, apiErrorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { useRealtimeVersion } from '../lib/realtime';
 import { useToast } from '../lib/toast';
 import { formatDate, formatNumber, money, todayISO } from '../lib/format';
 import {
@@ -55,6 +56,7 @@ const emptyForm: MemberFormState = {
 
 export function MembersPage() {
   const { capabilities, settings } = useAuth();
+  const realtimeVersion = useRealtimeVersion();
   const navigate = useNavigate();
   const toast = useToast();
   const [members, setMembers] = useState<Member[]>([]);
@@ -93,7 +95,7 @@ export function MembersPage() {
   useEffect(() => {
     const timer = window.setTimeout(() => load(false), 250);
     return () => window.clearTimeout(timer);
-  }, [search, status]);
+  }, [search, status, realtimeVersion]);
 
   useEffect(() => {
     load();

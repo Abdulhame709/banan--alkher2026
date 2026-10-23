@@ -13,6 +13,7 @@ import {
   Wallet,
 } from 'lucide-react';
 import { api, apiErrorMessage, downloadCsv } from '../lib/api';
+import { useRealtimeVersion } from '../lib/realtime';
 import { useToast } from '../lib/toast';
 import {
   EXPENSE_CATEGORY_LABELS,
@@ -104,6 +105,7 @@ const firstOfYear = () => `${todayISO().slice(0, 4)}-01-01`;
 
 export function ReportsPage() {
   const toast = useToast();
+  const realtimeVersion = useRealtimeVersion();
   const [searchParams, setSearchParams] = useSearchParams();
   const initialTab = (searchParams.get('tab') as Tab) || 'cash';
   const [tab, setTab] = useState<Tab>(['cash', 'arrears', 'donations', 'disbursements'].includes(initialTab) ? initialTab : 'cash');
@@ -161,7 +163,7 @@ export function ReportsPage() {
     return () => {
       active = false;
     };
-  }, [tab, from, to, refreshKey]);
+  }, [tab, from, to, refreshKey, realtimeVersion]);
 
   const rangeLabel = `${formatDate(from)} — ${formatDate(to)}`;
 

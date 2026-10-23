@@ -8,6 +8,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { api, apiErrorMessage } from '../lib/api';
+import { useRealtimeVersion } from '../lib/realtime';
 import { useToast } from '../lib/toast';
 import { ENTITY_LABELS, formatDateTime, formatNumber } from '../lib/format';
 import {
@@ -26,6 +27,7 @@ import type { AuditLog } from '../types';
 
 export function AuditPage() {
   const toast = useToast();
+  const realtimeVersion = useRealtimeVersion();
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [entityTypes, setEntityTypes] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
@@ -72,7 +74,7 @@ export function AuditPage() {
     const timer = window.setTimeout(() => load(false), 220);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, search, entityType, from, to]);
+  }, [page, search, entityType, from, to, realtimeVersion]);
 
   function resetFilters() {
     setSearch('');

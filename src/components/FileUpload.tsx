@@ -1,6 +1,6 @@
 import { useRef, useState, type DragEvent } from 'react';
 import { FileText, Image as ImageIcon, Loader2, Trash2, UploadCloud } from 'lucide-react';
-import { apiErrorMessage, uploadFile } from '../lib/api';
+import { apiErrorMessage, fileUrl, uploadFile } from '../lib/api';
 import { useToast } from '../lib/toast';
 
 export function FileUpload({
@@ -51,11 +51,7 @@ export function FileUpload({
   }
 
   const isImage = value && /\.(png|jpe?g|webp)$/i.test(value);
-  const link = value
-    ? value.startsWith('/api/') || value.startsWith('http')
-      ? value
-      : `/api/files/${value}`
-    : null;
+  const link = value ? (value.startsWith('http') ? value : fileUrl(value)) : null;
 
   return (
     <div className="file-upload">

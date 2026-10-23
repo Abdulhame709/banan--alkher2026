@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { api, apiErrorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { useRealtimeVersion } from '../lib/realtime';
 import { useToast } from '../lib/toast';
 import {
   EXPENSE_CATEGORY_LABELS,
@@ -63,6 +64,7 @@ import type {
 
 export function DashboardPage() {
   const { user, capabilities } = useAuth();
+  const realtimeVersion = useRealtimeVersion();
   const toast = useToast();
   const navigate = useNavigate();
   const [data, setData] = useState<DashboardData | MemberDashboard | null>(null);
@@ -90,7 +92,7 @@ export function DashboardPage() {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [realtimeVersion]);
 
   async function openReceipt(id: string) {
     try {

@@ -22,6 +22,7 @@ import {
 import { useAuth } from '../lib/auth';
 import { initials, ROLE_LABELS } from '../lib/format';
 import { BrandBlock, FundLogo } from './Logo';
+import { NotificationBell } from './NotificationBell';
 import type { Role } from '../types';
 
 interface NavItem {
@@ -285,6 +286,7 @@ export function Layout() {
                 <span>مركز الاعتمادات</span>
               </NavLink>
             )}
+            <NotificationBell />
             <div className="user-menu" ref={userMenuRef}>
               <button
                 type="button"

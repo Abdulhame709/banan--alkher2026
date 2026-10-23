@@ -11,8 +11,9 @@ import {
   RotateCcw,
   Wallet,
 } from 'lucide-react';
-import { api, apiErrorMessage, downloadCsv } from '../lib/api';
+import { api, apiErrorMessage, downloadCsv, fileUrl } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { useRealtimeVersion } from '../lib/realtime';
 import { useToast } from '../lib/toast';
 import {
   formatDate,
@@ -45,6 +46,7 @@ import type { Member, Receipt } from '../types';
 
 export function ReceiptsPage() {
   const { capabilities } = useAuth();
+  const realtimeVersion = useRealtimeVersion();
   const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [receipts, setReceipts] = useState<Receipt[]>([]);
@@ -102,7 +104,7 @@ export function ReceiptsPage() {
   useEffect(() => {
     const timer = window.setTimeout(() => load(false), 220);
     return () => window.clearTimeout(timer);
-  }, [search, type, restricted, from, to]);
+  }, [search, type, restricted, from, to, realtimeVersion]);
 
   useEffect(() => {
     load();
@@ -314,7 +316,7 @@ export function ReceiptsPage() {
                         {receipt.attachment_url && (
                           <a
                             className="icon-btn"
-                            href={`/api/files/${receipt.attachment_url}`}
+                            href={fileUrl(receipt.attachment_url)}
                             target="_blank"
                             rel="noreferrer"
                             title="عرض المرفق"

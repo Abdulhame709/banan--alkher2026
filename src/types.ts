@@ -206,6 +206,19 @@ export interface AuditLog {
   created_at: string;
 }
 
+export interface FundNotification {
+  id: string;
+  user_id: string;
+  type: string;
+  title: string;
+  body: string | null;
+  link: string | null;
+  entity_type: string | null;
+  entity_id: string | null;
+  read_at: string | null;
+  created_at: string;
+}
+
 export interface CashLedger {
   from: string;
   to: string;

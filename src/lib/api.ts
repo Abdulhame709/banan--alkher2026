@@ -1,3 +1,5 @@
+import { supabase } from './supabase';
+
 export class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -16,12 +18,36 @@ interface RequestOptions {
   raw?: boolean;
 }
 
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
+// Keep the Edge Function next to the database (Sydney). Without this the
+// platform runs it in the region closest to the visitor and every SQL query
+// pays a cross-region round trip.
+const EDGE_REGION = 'ap-southeast-2';
+let accessToken: string | null = null;
+
+export function setAccessToken(token: string | null) {
+  accessToken = token;
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  if (!accessToken) {
+    const { data } = await supabase.auth.getSession();
+    accessToken = data.session?.access_token ?? null;
+  }
+  return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+}
+
+function notifyUnauthorized() {
+  window.dispatchEvent(new CustomEvent('banan:unauthorized'));
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const headers: Record<string, string> = {};
+  const headers = await authHeaders();
+  headers['x-region'] = EDGE_REGION;
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
-  const response = await fetch(`/api${path}`, {
+
+  const response = await fetch(`${API_BASE}${path}`, {
     method: options.method ?? 'GET',
-    credentials: 'include',
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     signal: options.signal,
@@ -36,9 +62,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   const data = await response.json();
   if (!response.ok) {
-    if (response.status === 401 && !path.startsWith('/auth/login') && !path.startsWith('/auth/signup')) {
-      window.dispatchEvent(new CustomEvent('banan:unauthorized'));
-    }
+    if (response.status === 401) notifyUnauthorized();
     throw new ApiError(data?.error ?? 'حدث خطأ غير متوقع', response.status);
   }
   return data as T;
@@ -55,22 +79,25 @@ export const api = {
 export async function uploadFile(file: File, kind: 'document' | 'logo' = 'document') {
   const form = new FormData();
   form.append('file', file);
-  const response = await fetch(kind === 'logo' ? '/api/uploads/logo' : '/api/uploads', {
+  const response = await fetch(`${API_BASE}${kind === 'logo' ? '/uploads/logo' : '/uploads'}`, {
     method: 'POST',
-    credentials: 'include',
+    headers: { ...(await authHeaders()), 'x-region': EDGE_REGION },
     body: form,
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (response.status === 401) window.dispatchEvent(new CustomEvent('banan:unauthorized'));
+    if (response.status === 401) notifyUnauthorized();
     throw new ApiError(data?.error ?? 'تعذر رفع الملف', response.status);
   }
   return data as { file: string; name: string; size: number; mime: string };
 }
 
 export async function downloadCsv(path: string, fallbackName: string) {
-  const response = await fetch(`/api${path}`, { credentials: 'include' });
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers: { ...(await authHeaders()), 'x-region': EDGE_REGION },
+  });
   if (!response.ok) {
+    if (response.status === 401) notifyUnauthorized();
     const data = await response.json().catch(() => ({}));
     throw new ApiError(data?.error ?? 'تعذر تصدير التقرير', response.status);
   }
@@ -86,6 +113,16 @@ export async function downloadCsv(path: string, fallbackName: string) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+export function fileUrl(filename: string | null | undefined) {
+  if (!filename) return '';
+  if (filename.startsWith('http')) return filename;
+  const base = API_BASE.startsWith('http') ? API_BASE : `${window.location.origin}${API_BASE}`;
+  const params = new URLSearchParams();
+  if (accessToken) params.set('token', accessToken);
+  params.set('forceFunctionRegion', EDGE_REGION);
+  return `${base}/files/${encodeURIComponent(filename)}?${params.toString()}`;
 }
 
 export function apiErrorMessage(error: unknown) {

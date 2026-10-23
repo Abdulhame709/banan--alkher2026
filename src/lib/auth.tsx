@@ -4,10 +4,12 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
-import { api } from './api';
+import { api, ApiError, setAccessToken } from './api';
+import { supabase } from './supabase';
 import type { Capabilities, PublicSettings, SessionPayload, User } from '../types';
 
 interface AuthContextValue {
@@ -29,11 +31,30 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+function friendlyAuthError(message: string) {
+  const text = message.toLowerCase();
+  if (text.includes('invalid login credentials')) return 'البريد الإلكتروني أو كلمة المرور غير صحيحة';
+  if (text.includes('email not confirmed')) return 'يرجى تأكيد البريد الإلكتروني أولاً ثم تسجيل الدخول';
+  if (text.includes('user already registered')) return 'يوجد حساب مسجل بهذا البريد الإلكتروني';
+  if (text.includes('password should be at least')) return 'كلمة المرور يجب أن تكون 8 أحرف على الأقل';
+  if (text.includes('unable to validate email')) return 'البريد الإلكتروني غير صالح';
+  if (text.includes('signups not allowed')) return 'التسجيل الذاتي مغلق حالياً. تواصل مع مدير النظام';
+  return message || 'تعذر إتمام العملية';
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [settings, setSettings] = useState<PublicSettings | null>(null);
   const [loading, setLoading] = useState(true);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const applySession = useCallback((payload: SessionPayload) => {
     setUser(payload.user);
@@ -49,59 +70,103 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const payload = await api.get<SessionPayload>('/auth/me');
-      applySession(payload);
-    } catch {
-      clear();
+      const payload = await api.get<SessionPayload>('/auth/me', AbortSignal.timeout(15000));
+      if (mounted.current) applySession(payload);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        const { data } = await supabase.auth.refreshSession();
+        if (data.session) {
+          setAccessToken(data.session.access_token);
+          try {
+            const payload = await api.get<SessionPayload>('/auth/me', AbortSignal.timeout(15000));
+            if (mounted.current) applySession(payload);
+            return;
+          } catch {
+            /* fall through to clear */
+          }
+        }
+      }
+      if (mounted.current) clear();
     }
   }, [applySession, clear]);
 
   useEffect(() => {
     let active = true;
+
     (async () => {
-      try {
-        const payload = await api.get<SessionPayload>('/auth/me');
-        if (active) applySession(payload);
-      } catch {
-        if (active) clear();
-      } finally {
-        if (active) setLoading(false);
-      }
+      const { data } = await supabase.auth.getSession();
+      if (!active) return;
+      setAccessToken(data.session?.access_token ?? null);
+      if (data.session) await refresh();
+      else clear();
+      if (active) setLoading(false);
     })();
+
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!active) return;
+      setAccessToken(session?.access_token ?? null);
+      if (event === 'SIGNED_OUT' || !session) {
+        clear();
+      }
+      // login()/signup() call refresh() explicitly. Refreshing here too caused
+      // two simultaneous /auth/me calls (and a long splash) on every reload.
+    });
+
     return () => {
       active = false;
+      listener.subscription.unsubscribe();
     };
-  }, [applySession, clear]);
+  }, [refresh, clear]);
 
   useEffect(() => {
-    const onUnauthorized = () => clear();
+    const onUnauthorized = () => {
+      setAccessToken(null);
+      clear();
+    };
     window.addEventListener('banan:unauthorized', onUnauthorized);
     return () => window.removeEventListener('banan:unauthorized', onUnauthorized);
   }, [clear]);
 
   const login = useCallback(
     async (email: string, password: string) => {
-      const payload = await api.post<SessionPayload>('/auth/login', { email, password });
-      applySession(payload);
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw new ApiError(friendlyAuthError(error.message), 401);
+      await refresh();
     },
-    [applySession]
+    [refresh]
   );
 
   const signup = useCallback(
     async (data: { full_name: string; email: string; password: string; phone?: string }) => {
-      const payload = await api.post<SessionPayload>('/auth/signup', data);
-      applySession(payload);
+      const { data: result, error } = await supabase.auth.signUp({
+        email: data.email,
+        password: data.password,
+        options: {
+          data: {
+            full_name: data.full_name,
+            phone: data.phone || null,
+          },
+        },
+      });
+      if (error) throw new ApiError(friendlyAuthError(error.message), 400);
+      if (!result.session) {
+        throw new ApiError(
+          'تم إنشاء الحساب. يرجى تأكيد البريد الإلكتروني من رسالة التأكيد ثم تسجيل الدخول.',
+          200
+        );
+      }
+      await refresh();
     },
-    [applySession]
+    [refresh]
   );
 
   const logout = useCallback(async () => {
     try {
-      await api.post('/auth/logout');
-    } catch {
-      /* ignore network failures during logout */
+      await supabase.auth.signOut();
+    } finally {
+      setAccessToken(null);
+      clear();
     }
-    clear();
   }, [clear]);
 
   const value = useMemo(

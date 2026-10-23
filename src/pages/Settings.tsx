@@ -9,7 +9,7 @@ import {
   SlidersHorizontal,
   Wallet,
 } from 'lucide-react';
-import { api, apiErrorMessage } from '../lib/api';
+import { api, apiErrorMessage, fileUrl } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useToast } from '../lib/toast';
 import { formatDateTime, money } from '../lib/format';
@@ -155,7 +155,7 @@ export function SettingsPage() {
             <div className="logo-settings">
               <div className="logo-preview">
                 {form.logo_file ? (
-                  <img src={`/api/files/${form.logo_file}`} alt="شعار الصندوق" />
+                  <img src={fileUrl(form.logo_file)} alt="شعار الصندوق" />
                 ) : (
                   <Emblem size={96} />
                 )}
@@ -255,7 +255,7 @@ export function SettingsPage() {
             <CardHeader title="ملخص الهوية" subtitle="معاينة مباشرة" icon={<Info size={19} />} />
             <div className="brand-preview">
               {form.logo_file ? (
-                <img src={`/api/files/${form.logo_file}`} alt="الشعار" className="brand-preview-logo" />
+                <img src={fileUrl(form.logo_file)} alt="الشعار" className="brand-preview-logo" />
               ) : (
                 <Emblem size={72} />
               )}

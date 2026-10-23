@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { api, apiErrorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { useRealtimeVersion } from '../lib/realtime';
 import { useToast } from '../lib/toast';
 import {
   formatDate,
@@ -54,6 +55,7 @@ interface SubscriptionSummary {
 
 export function SubscriptionsPage() {
   const { capabilities } = useAuth();
+  const realtimeVersion = useRealtimeVersion();
   const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [month, setMonth] = useState(monthOptions().find((option) => option.value === todayISO().slice(0, 7))?.value ?? todayISO().slice(0, 7));
@@ -109,7 +111,7 @@ export function SubscriptionsPage() {
   useEffect(() => {
     const timer = window.setTimeout(() => load(false), 220);
     return () => window.clearTimeout(timer);
-  }, [month, status, search]);
+  }, [month, status, search, realtimeVersion]);
 
   useEffect(() => {
     load();
