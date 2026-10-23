@@ -1,0 +1,164 @@
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import type { ReactNode } from 'react';
+import { ShieldAlert } from 'lucide-react';
+import { useAuth } from './lib/auth';
+import { Layout } from './components/Layout';
+import { Emblem } from './components/Logo';
+import { Button, EmptyState } from './components/ui';
+import { LoginPage } from './pages/Login';
+import { DashboardPage } from './pages/Dashboard';
+import { MembersPage } from './pages/Members';
+import { SubscriptionsPage } from './pages/Subscriptions';
+import { ReceiptsPage } from './pages/Receipts';
+import { ExpensesPage } from './pages/Expenses';
+import { ReportsPage } from './pages/Reports';
+import { UsersPage } from './pages/Users';
+import { SettingsPage } from './pages/Settings';
+import { AuditPage } from './pages/Audit';
+import type { Capabilities } from './types';
+
+function Splash() {
+  return (
+    <div className="splash-screen">
+      <Emblem size={72} />
+      <strong>صندوق بنان الخير للبنيان</strong>
+      <span>الغدير – مقبنة – تعز</span>
+      <div className="splash-loader" />
+    </div>
+  );
+}
+
+function RequireAuth({ children }: { children: ReactNode }) {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+  if (loading) return <Splash />;
+  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  return <>{children}</>;
+}
+
+function GoHomeButton() {
+  const navigate = useNavigate();
+  return <Button onClick={() => navigate('/')}>العودة للوحة التحكم</Button>;
+}
+
+function Guard({
+  children,
+  allow,
+}: {
+  children: ReactNode;
+  allow: (capabilities: Capabilities, role: string) => boolean;
+}) {
+  const { capabilities, user } = useAuth();
+  if (!capabilities || !user) return null;
+  if (!allow(capabilities, user.role)) {
+    return (
+      <div className="page-stack">
+        <div className="card card-pad">
+          <EmptyState
+            title="لا تملك صلاحية الوصول"
+            description="هذه الصفحة متاحة لأدوار محددة فقط. يمكنك العودة إلى لوحة التحكم أو التواصل مع مدير النظام."
+            icon={<ShieldAlert size={30} />}
+            action={<GoHomeButton />}
+          />
+        </div>
+      </div>
+    );
+  }
+  return <>{children}</>;
+}
+
+export default function App() {
+  const { loading } = useAuth();
+  if (loading) return <Splash />;
+
+  return (
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route
+        element={
+          <RequireAuth>
+            <Layout />
+          </RequireAuth>
+        }
+      >
+        <Route index element={<DashboardPage />} />
+        <Route
+          path="members"
+          element={
+            <Guard allow={(_capabilities, role) => role !== 'member'}>
+              <MembersPage />
+            </Guard>
+          }
+        />
+        <Route
+          path="subscriptions"
+          element={
+            <Guard allow={(_capabilities, role) => role !== 'member'}>
+              <SubscriptionsPage />
+            </Guard>
+          }
+        />
+        <Route
+          path="receipts"
+          element={
+            <Guard allow={(capabilities, role) => capabilities.manageReceipts || role === 'board_member'}>
+              <ReceiptsPage />
+            </Guard>
+          }
+        />
+        <Route
+          path="expenses"
+          element={
+            <Guard allow={(_capabilities, role) => role !== 'member'}>
+              <ExpensesPage />
+            </Guard>
+          }
+        />
+        <Route
+          path="reports"
+          element={
+            <Guard allow={(capabilities) => capabilities.viewReports}>
+              <ReportsPage />
+            </Guard>
+          }
+        />
+        <Route
+          path="users"
+          element={
+            <Guard allow={(capabilities) => capabilities.admin}>
+              <UsersPage />
+            </Guard>
+          }
+        />
+        <Route
+          path="settings"
+          element={
+            <Guard allow={(capabilities) => capabilities.admin}>
+              <SettingsPage />
+            </Guard>
+          }
+        />
+        <Route
+          path="audit"
+          element={
+            <Guard allow={(capabilities) => capabilities.viewAudit}>
+              <AuditPage />
+            </Guard>
+          }
+        />
+        <Route
+          path="*"
+          element={
+            <div className="card card-pad">
+              <EmptyState
+                title="الصفحة غير موجودة"
+                description="الرابط المطلوب غير متوفر في النظام."
+                action={<GoHomeButton />}
+              />
+            </div>
+          }
+        />
+      </Route>
+    </Routes>
+  );
+}

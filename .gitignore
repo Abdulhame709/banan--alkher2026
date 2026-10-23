@@ -1,0 +1,37 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+
+# local data (SQLite database, uploads, backups)
+data/
+
+# environment / secrets
+.env
+.env.local
+.env.*.local
+
+# logs
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Android / Capacitor
+android/.gradle/
+android/app/build/
+android/build/
+*.keystore
+*.jks
+
+# Supabase CLI
+supabase/.temp/
+supabase/.branches/
+
+# test output
+coverage/
