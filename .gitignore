@@ -11,6 +11,7 @@ data/
 .env
 .env.local
 .env.*.local
+SUPABASE_KEYS.txt
 
 # logs
 *.log
