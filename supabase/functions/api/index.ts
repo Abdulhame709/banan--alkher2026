@@ -21,6 +21,19 @@ const SERVICE_KEY =
   JSON.parse(Deno.env.get('SUPABASE_SECRET_KEYS') ?? '{}').default;
 const DB_URL = Deno.env.get('SUPABASE_DB_URL')!;
 const BUCKET = Deno.env.get('SUPABASE_STORAGE_BUCKET') ?? 'fund-files';
+const BACKUP_BUCKET = Deno.env.get('SUPABASE_BACKUP_BUCKET') ?? 'fund-backups';
+const BACKUP_RETENTION = 30;
+const BACKUP_TABLES = [
+  'fund_settings',
+  'fund_user_profiles',
+  'fund_members',
+  'fund_subscriptions',
+  'fund_receipts',
+  'fund_expense_requests',
+  'fund_expense_approvals',
+  'fund_audit_logs',
+  'sequences',
+];
 
 if (!SUPABASE_URL || !ANON_KEY || !SERVICE_KEY || !DB_URL) {
   throw new Error('Supabase environment is incomplete');
@@ -1931,6 +1944,174 @@ app.post('/notifications/:id/read', async (c) => {
 app.post('/notifications/read-all', async (c) => {
   const user = await requireUser(c);
   await sql`update fund_notifications set read_at = now() where user_id = ${user.id} and read_at is null`;
+  return c.json({ ok: true });
+});
+
+/* --------------------------------- Backups --------------------------------- */
+
+async function uploadBackupObject(path: string, bytes: Uint8Array) {
+  const response = await fetch(`${SUPABASE_URL}/storage/v1/object/${BACKUP_BUCKET}/${path}`, {
+    method: 'POST',
+    headers: {
+      apikey: SERVICE_KEY,
+      Authorization: `Bearer ${SERVICE_KEY}`,
+      'Content-Type': 'application/json',
+      'x-upsert': 'true',
+    },
+    body: bytes,
+  });
+  if (!response.ok) {
+    console.error('backup upload failed', response.status, await response.text());
+    throw new HttpError(500, 'تعذر رفع النسخة الاحتياطية إلى التخزين');
+  }
+}
+
+async function backupDownloadUrl(storagePath: string) {
+  const response = await fetch(
+    `${SUPABASE_URL}/storage/v1/object/sign/${BACKUP_BUCKET}/${encodeURIComponent(storagePath)}`,
+    {
+      method: 'POST',
+      headers: {
+        apikey: SERVICE_KEY,
+        Authorization: `Bearer ${SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ expiresIn: 3600 }),
+    }
+  );
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.signedURL) {
+    console.error('backup sign failed', response.status, data);
+    throw new HttpError(500, 'تعذر إنشاء رابط تنزيل النسخة الاحتياطية');
+  }
+  const separator = data.signedURL.includes('?') ? '&' : '?';
+  return `${SUPABASE_URL}/storage/v1${data.signedURL}${separator}download=${encodeURIComponent(storagePath)}`;
+}
+
+app.get('/backups', async (c) => {
+  const user = await requireUser(c);
+  requireRole(user, 'admin');
+  const rows = await sql`select id, filename, storage_path, size_bytes, counts, created_by, created_at
+    from fund_backups order by created_at desc limit 50`;
+  return c.json({ backups: rows, retention: BACKUP_RETENTION });
+});
+
+app.post('/backup', async (c) => {
+  const user = await requireUser(c);
+  requireRole(user, 'admin');
+
+  // Read every financial table inside one transaction so the snapshot is
+  // internally consistent (no receipt without its subscription, etc.).
+  const data: Record<string, any[]> = {};
+  await sql.begin(async (tx) => {
+    for (const table of BACKUP_TABLES) {
+      data[table] = await tx`select * from ${tx(table)}`;
+    }
+  });
+
+  const counts = Object.fromEntries(Object.entries(data).map(([table, rows]) => [table, rows.length]));
+  const generatedAt = new Date();
+  const stamp = generatedAt
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\..+/, '')
+    .replace('T', '-');
+  const filename = `banan-backup-${stamp}.json`;
+  const payload = {
+    format: 'banan-fund-backup',
+    version: 1,
+    generated_at: generatedAt.toISOString(),
+    generated_by: {
+      id: user.id,
+      full_name: user.full_name,
+      email: user.email,
+      role: user.role,
+    },
+    counts,
+    data,
+  };
+  const bytes = new TextEncoder().encode(JSON.stringify(payload, null, 2));
+  await uploadBackupObject(filename, bytes);
+
+  const inserted = await sql`insert into fund_backups
+      (filename, storage_path, size_bytes, counts, created_by)
+    values (${filename}, ${filename}, ${bytes.byteLength}, ${sql.json(counts)}, ${user.id})
+    returning *`;
+  const backup = inserted[0];
+
+  // Keep only the newest copies. Retention failures must not invalidate the
+  // backup that was just created successfully.
+  try {
+    const stale = await sql`select id, storage_path from fund_backups
+      order by created_at desc offset ${BACKUP_RETENTION}`;
+    if (stale.length) {
+      await fetch(`${SUPABASE_URL}/storage/v1/object/${BACKUP_BUCKET}`, {
+        method: 'DELETE',
+        headers: {
+          apikey: SERVICE_KEY,
+          Authorization: `Bearer ${SERVICE_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ prefixes: stale.map((row: any) => row.storage_path) }),
+      });
+      await sql`delete from fund_backups where id in ${sql(stale.map((row: any) => row.id))}`;
+    }
+  } catch (error) {
+    console.error('backup retention failed', error);
+  }
+
+  await audit(
+    sql,
+    user,
+    'إنشاء نسخة احتياطية',
+    'backup',
+    backup.id,
+    `نسخة ${filename} بحجم ${bytes.byteLength} بايت`
+  );
+
+  return c.json({ backup, url: await backupDownloadUrl(filename) }, 201);
+});
+
+app.get('/backups/:id', async (c) => {
+  const user = await requireUser(c);
+  requireRole(user, 'admin');
+  const rows = await sql`select * from fund_backups where id = ${c.req.param('id')}`;
+  if (!rows.length) throw new HttpError(404, 'النسخة الاحتياطية غير موجودة');
+  return c.json({
+    backup: rows[0],
+    url: await backupDownloadUrl(rows[0].storage_path),
+  });
+});
+
+app.delete('/backups/:id', async (c) => {
+  const user = await requireUser(c);
+  requireRole(user, 'admin');
+  const rows = await sql`select * from fund_backups where id = ${c.req.param('id')}`;
+  if (!rows.length) throw new HttpError(404, 'النسخة الاحتياطية غير موجودة');
+  const backup = rows[0];
+  const response = await fetch(
+    `${SUPABASE_URL}/storage/v1/object/${BACKUP_BUCKET}/${backup.storage_path}`,
+    {
+      method: 'DELETE',
+      headers: {
+        apikey: SERVICE_KEY,
+        Authorization: `Bearer ${SERVICE_KEY}`,
+      },
+    }
+  );
+  if (!response.ok && response.status !== 404) {
+    console.error('backup delete failed', response.status, await response.text());
+    throw new HttpError(500, 'تعذر حذف ملف النسخة الاحتياطية');
+  }
+  await sql`delete from fund_backups where id = ${backup.id}`;
+  await audit(
+    sql,
+    user,
+    'حذف نسخة احتياطية',
+    'backup',
+    backup.id,
+    `حذف النسخة ${backup.filename}`
+  );
   return c.json({ ok: true });
 });
 

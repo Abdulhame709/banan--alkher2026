@@ -25,6 +25,7 @@ import {
   TextInput,
 } from '../components/ui';
 import { FileUpload } from '../components/FileUpload';
+import { BackupCard } from '../components/BackupCard';
 import { Emblem } from '../components/Logo';
 import type { FundSettings } from '../types';
 
@@ -268,20 +269,23 @@ export function SettingsPage() {
           <Card>
             <CardHeader title="سلامة البيانات" subtitle="معلومات النظام" icon={<ShieldCheck size={19} />} />
             <ul className="system-info">
-              <li><span>قاعدة البيانات</span><strong>SQLite (WAL)</strong></li>
-              <li><span>تخزين الملفات</span><strong>مجلد آمن على الخادم</strong></li>
+              <li><span>قاعدة البيانات</span><strong>PostgreSQL — Supabase</strong></li>
+              <li><span>تخزين الملفات</span><strong>Supabase Storage</strong></li>
               <li><span>سجل التدقيق</span><strong>غير قابل للتعديل أو الحذف</strong></li>
-              <li><span>جلسات الدخول</span><strong>مشفرة ومحددة المدة</strong></li>
+              <li><span>جلسات الدخول</span><strong>Supabase Auth — مشفرة</strong></li>
+              <li><span>التحديثات</span><strong>فورية بين المستخدمين</strong></li>
               <li><span>سياسة الاعتماد</span><strong>{form.allow_self_approval_demo ? 'تجاوز اختباري مفعّل' : 'اعتماد مزدوج صارم'}</strong></li>
             </ul>
           </Card>
 
           <Alert tone="info" title="نسخ احتياطي">
-            يُنصح بأخذ نسخة احتياطية دورية من مجلد <code>data</code> الذي يحتوي قاعدة البيانات
-            والملفات المرفوعة.
+            استخدم زر «إنشاء نسخة الآن» في قسم النسخ الاحتياطية بالأسفل. تُحفظ النسخ في تخزين
+            Supabase الخاص ويُحتفظ بآخر 30 نسخة تلقائياً، ويمكن تنزيل أي نسخة في أي وقت.
           </Alert>
         </aside>
       </form>
+
+      <BackupCard />
     </div>
   );
 }

@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   HandCoins,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -23,6 +24,7 @@ import { useAuth } from '../lib/auth';
 import { initials, ROLE_LABELS } from '../lib/format';
 import { BrandBlock, FundLogo } from './Logo';
 import { NotificationBell } from './NotificationBell';
+import { ChangePasswordModal } from './ChangePasswordModal';
 import type { Role } from '../types';
 
 interface NavItem {
@@ -53,6 +55,7 @@ export function Layout() {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('banan:sidebar') === '1');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [userMenu, setUserMenu] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -320,6 +323,16 @@ export function Layout() {
                   {capabilities.viewAudit && (
                     <NavLink to="/audit" className="dropdown-link"><ScrollText size={17} /> سجل التدقيق</NavLink>
                   )}
+                  <button
+                    type="button"
+                    className="dropdown-link"
+                    onClick={() => {
+                      setUserMenu(false);
+                      setPasswordOpen(true);
+                    }}
+                  >
+                    <KeyRound size={17} /> تغيير كلمة المرور
+                  </button>
                   <button type="button" className="dropdown-link danger" onClick={logout}>
                     <LogOut size={17} /> تسجيل الخروج
                   </button>
@@ -351,6 +364,10 @@ export function Layout() {
           <span>المزيد</span>
         </button>
       </nav>
+
+      {passwordOpen && (
+        <ChangePasswordModal email={user.email} onClose={() => setPasswordOpen(false)} />
+      )}
     </div>
   );
 }

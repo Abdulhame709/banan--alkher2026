@@ -1,152 +1,402 @@
 # صندوق بنان الخير للبنيان — النظام المحاسبي والإداري
 
-نظام ويب عربي (RTL) لإدارة صندوق خيري: الأعضاء، الاشتراكات الشهرية، المقبوضات والتبرعات،
-طلبات المصروفات والاعتماد المزدوج، الصرف وسندات `PV`، التقارير، وسجل تدقيق غير قابل للتعديل.
+نظام عربي (RTL) لإدارة صندوق خيري: الأعضاء، الاشتراكات الشهرية، سندات القبض والتبرعات،
+طلبات الصرف بالاعتماد المزدوج، التقارير، الطباعة، التصدير، الإشعارات الفورية، والنسخ
+الاحتياطية.
 
-## الحالة الحالية
+**الروابط الحالية**
 
-> **قيد الترحيل إلى PostgreSQL / Supabase.**
-> الفرع `main` يحتوي النسخة المستقرة السابقة (Express + SQLite)، والفرع
-> `feat/cloud-postgres` هو نسخة السحابة الجديدة. لا تُستخدم بيانات الإنتاج قبل
-> اكتمال الترحيل والاختبارات.
-
-## التقنيات
-
-| الطبقة | التقنية |
+| الخدمة | الرابط |
 |---|---|
-| الواجهة | React 19 + Vite + TypeScript |
-| الخادم | Node.js 24 + Express |
-| قاعدة البيانات | PostgreSQL 18 (محلياً) / Supabase (إنتاجياً) |
-| المصادقة | جلسات مخصصة + Scrypt + كوكي HttpOnly |
-| الملفات | قرص محلي (تطوير) / Supabase Storage (إنتاج) |
-| التحديث اللحظي | Server-Sent Events (SSE) |
-| الهاتف | PWA + Capacitor APK |
-| النشر | Docker + أي مزوّد يدعم الحاويات (Koyeb مجاناً) |
+| نسخة الويب (PWA) | https://abdulhame709.github.io/banan--alkher2026/ |
+| تطبيق الأندرويد (APK) | https://github.com/Abdulhame709/banan--alkher2026/releases |
+| الكود | https://github.com/Abdulhame709/banan--alkher2026 |
+| Supabase | https://supabase.com/dashboard/project/jjzyqgqeevgevmvojyvn |
 
-## التشغيل المحلي
+> دليل الاستخدام خطوة بخطوة: [`docs/دليل-المستخدم.md`](docs/دليل-المستخدم.md)
 
-### 1) المتطلبات
-- Node.js 22.5+ (مُختبر على 24)
-- PostgreSQL 15+ (مُختبر على 18)
+---
 
-### 2) قاعدة بيانات محلية
-يمكن استخدام أي خادم PostgreSQL. مثال لإنشاء عنقود محلي على المنفذ `55432`:
+## 1. المعمارية
+
+```
+المتصفح / تطبيق الأندرويد (Capacitor)
+        │  Supabase Auth (JWT) + REST
+        ▼
+Supabase Edge Function  /functions/v1/api   (Hono + postgres.js)
+        │  Supavisor transaction pooler (5432 → 6543)
+        ▼
+PostgreSQL (Supabase)  ──  RLS + triggers + realtime
+        │
+        ├── Supabase Storage: fund-files (مرفقات) + fund-backups (نسخ احتياطية)
+        └── Supabase Realtime: fund_events + fund_notifications
+```
+
+- **الواجهة:** React 19 + Vite + TypeScript + HashRouter.
+- **الاستضافة:** GitHub Pages (نسخة الويب) وGitHub Releases (APK).
+- **البيانات:** Supabase PostgreSQL مع RLS.
+- **المصادقة:** Supabase Auth (بريد وكلمة مرور).
+- **الملفات:** Supabase Storage.
+- **التحديث الفوري:** Supabase Realtime (جدول أحداث خفيف `fund_events` + إشعارات).
+- **الخادم:** Edge Function واحدة تحافظ على نفس واجهة REST القديمة.
+- **المنطقة:** Edge Function تعمل في `ap-southeast-2` (سيدني) بجوار قاعدة البيانات.
+
+---
+
+## 2. الصلاحيات
+
+| الدور | الصلاحيات |
+|---|---|
+| `admin` | كل شيء: الإعدادات، المستخدمون، النسخ الاحتياطي، الاعتماد، الصرف، التقارير |
+| `accountant` | الأعضاء، الاستحقاقات، السندات، طلبات الصرف، التقارير |
+| `treasurer` | الاعتماد، الصرف، التقارير |
+| `board_member` | الاطلاع والمراجعة والاعتماد حسب الصلاحية |
+| `member` | بوابة العضو: استحقاقاته وسنداته وكشف حسابه |
+
+قواعد الاعتماد:
+
+- اعتماد مزدوج مستقل: شخصان مختلفان.
+- منشئ الطلب لا يعتمد طلبه.
+- الشخص نفسه لا يعتمد الطلب مرتين.
+- الرفض نهائي.
+- الصرف فقط من `admin` أو `treasurer`، وبعد التحقق من كفاية الرصيد النقدي.
+
+---
+
+## 3. القواعد المالية
+
+```
+الرصيد النقدي الفعلي = الرصيد الافتتاحي + المقبوضات − المصروفات المدفوعة
+الملتزمات            = طلبات معتمدة لم تُصرف
+الصافي المتاح        = الرصيد النقدي الفعلي − الملتزمات
+```
+
+- المتأخرات على الأعضاء **لا** تُحسب رصيداً نقدياً.
+- السداد الجزئي مسموح، والسداد الزائد ممنوع.
+- ترقيم السندات تسلسلي: `REC-0001`، `PV-0001`.
+- كل عملية مالية تُسجّل في `fund_audit_logs`، والسجل غير قابل للتعديل أو الحذف.
+
+---
+
+## 4. التشغيل المحلي
+
+### المتطلبات
+
+- Node.js 22.5 أو أحدث (المشروع يستخدم Node 24 محلياً).
+- حساب Supabase ومفاتيحه (أو استخدم المشروع الحالي).
+
+### الخطوات
 
 ```powershell
-$bin = 'C:\Program Files\PostgreSQL\18\bin'
-& "$bin\initdb.exe" -D "$env:TEMP\banan-pg" -U postgres --auth=trust --encoding=UTF8 --locale=C
-& "$bin\pg_ctl.exe" -D "$env:TEMP\banan-pg" -o '"-p 55432"' -l "$env:TEMP\banan-pg.log" start
-& "$bin\createdb.exe" -p 55432 -U postgres banan
-```
-
-### 3) الإعداد
-```bash
-cp .env.example .env
-# عدّل DATABASE_URL إذا لزم
 npm install
+Copy-Item .env.example .env   # ثم عدّل القيم
+npm run dev                   # يشغّل Vite على http://localhost:5173
 ```
 
-### 4) التطوير
-```bash
-npm run dev          # الخادم + Vite معاً
-npm run dev:server   # الخادم فقط
-npm run dev:client   # الواجهة فقط
+قيم Vite المطلوبة في `.env`:
+
+```dotenv
+VITE_SUPABASE_URL=https://<project-ref>.supabase.co
+VITE_SUPABASE_ANON_KEY=<anon-key>
+VITE_API_BASE_URL=https://<project-ref>.supabase.co/functions/v1/api
 ```
 
-### 5) البناء والتشغيل
-```bash
-npm run build
-npm start
+> مفتاح `service_role` **لا** يوضع في Vite ولا في الواجهة. يُستخدم فقط داخل Edge Function
+> أو سكربتات إدارية محلية.
+
+### أوامر مفيدة
+
+```powershell
+npm run typecheck     # فحص TypeScript
+npm run build         # بناء dist
+npm run preview       # معاينة بناء الإنتاج
+npm run icons         # توليد أيقونات PWA
+npm run native:assets # توليد أيقونات/شاشات Capacitor
+npm run apk:sync      # build + npx cap sync android
 ```
 
-### 6) البيانات التجريبية
-```bash
-npm run seed
-```
-كلمة المرور للجميع: `Banan@2026`
-(`admin@banan.org`, `accountant@banan.org`, `treasurer@banan.org`, `board@banan.org`, `member@banan.org`)
+---
 
-> `seed` يرفض العمل إذا كانت هناك حسابات موجودة مسبقاً.
+## 5. قاعدة البيانات والترحيلات
 
-## السكربتات
+الملفات في `supabase/migrations/`:
 
-| الأمر | الوظيفة |
+| الملف | المحتوى |
 |---|---|
-| `npm run dev` | تشغيل الخادم والواجهة |
-| `npm run build` | بناء الواجهة إلى `dist/` |
-| `npm start` | تشغيل الإنتاج |
-| `npm run seed` | بيانات تجريبية |
-| `npm run typecheck` | فحص TypeScript |
-| `npm run db:migrate` | تطبيق ترحيلات قاعدة البيانات |
-| `npm run db:reset` | حذف وإعادة إنشاء المخطط (تطوير فقط) |
-| `npm test` | اختبارات الـAPI |
+| `0001_init.sql` | الجداول، RLS، triggers، الإشعارات، bucket المرفقات |
+| `0002_realtime_events.sql` | جدول `fund_events` و triggers النشر الفوري |
+| `0003_backups.sql` | جدول `fund_backups`، bucket النسخ، صلاحياته |
 
-## البنية
+تطبيق الترحيلات عبر Supabase CLI:
+
+```powershell
+npx supabase link --project-ref jjzyqgqeevgevmvojyvn
+npx supabase db push
+```
+
+أو عبر Management API (كما تم في هذا المشروع):
+
+```powershell
+$env:SUPABASE_ACCESS_TOKEN = "<management-api-token>"
+# POST /v1/projects/{ref}/database/query  بالـ SQL المطلوب
+```
+
+### الجداول الأساسية
+
+`fund_settings`، `fund_user_profiles`، `fund_members`، `fund_subscriptions`،
+`fund_receipts`، `fund_expense_requests`، `fund_expense_approvals`،
+`fund_audit_logs`، `fund_notifications`، `fund_events`، `fund_backups`،
+`fund_device_tokens`، `sequences`.
+
+---
+
+## 6. نشر Edge Function
+
+```powershell
+$env:SUPABASE_ACCESS_TOKEN = "<management-api-token>"
+npx supabase functions deploy api `
+  --project-ref jjzyqgqeevgevmvojyvn `
+  --no-verify-jwt
+```
+
+- `--no-verify-jwt` مطلوب لأن الدالة تتحقق من الهوية بنفسها وتدعم طلبات الملفات
+  والإشعارات.
+- الدالة تقرأ `SUPABASE_DB_URL` من بيئة Supabase وتحوّله تلقائياً إلى Supavisor
+  transaction pooler.
+- الواجهة ترسل `x-region: ap-southeast-2` لتثبيت التنفيذ في سيدني.
+- روابط الصور والتنزيل تستخدم `forceFunctionRegion=ap-southeast-2`.
+
+### اختبار سريع
+
+```powershell
+curl "https://jjzyqgqeevgevmvojyvn.supabase.co/functions/v1/api/health" `
+  -H "x-region: ap-southeast-2"
+```
+
+---
+
+## 7. نسخة الويب على GitHub Pages
+
+1. اذهب إلى **Settings → Pages** في المستودع.
+2. اختر **Source: GitHub Actions**.
+3. ارفع التغييرات إلى الفرع `main`.
+4. سيعمل workflow `.github/workflows/deploy-pages.yml` تلقائياً.
+5. الرابط: `https://abdulhame709.github.io/banan--alkher2026/`.
+
+الأسرار المطلوبة في **Settings → Secrets and variables → Actions**:
+
+| السر | القيمة |
+|---|---|
+| `VITE_SUPABASE_URL` | رابط المشروع |
+| `VITE_SUPABASE_ANON_KEY` | المفتاح العام anon |
+| `VITE_API_BASE_URL` | `https://<ref>.supabase.co/functions/v1/api` |
+
+> لا تضع `service_role` في أسرار Vite. هو مطلوب فقط للـ Edge Function (مضبوط تلقائياً
+> في Supabase).
+
+### ملاحظات
+
+- التطبيق يستخدم `HashRouter` و`base: './'` ليعمل على GitHub Pages وعلى مسار فرعي
+  وداخل APK.
+- الخطوط والأيقونات بمسارات نسبية.
+- Service Worker يحدّث نفسه تلقائياً. بعد نشر جديد، حدّث الصفحة مرة واحدة إن ظهرت
+  نسخة قديمة.
+
+---
+
+## 8. بناء APK وتوقيعه
+
+المشروع يستخدم Capacitor 8 وAndroid SDK 36.
+
+- الحزمة: `org.banan.fund`
+- الاسم: `صندوق بنان الخير`
+- الحد الأدنى: أندرويد 7.0 (API 24)
+- workflow: `.github/workflows/build-apk.yml`
+
+### الأسرار المطلوبة
+
+| السر | الوصف |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | ملف keystore مشفّر Base64 |
+| `ANDROID_KEYSTORE_PASSWORD` | كلمة مرور الـ keystore |
+| `ANDROID_KEY_ALIAS` | اسم المفتاح (`banan`) |
+| `ANDROID_KEY_PASSWORD` | كلمة مرور المفتاح |
+
+### توليد keystore (مرة واحدة)
+
+```powershell
+keytool -genkeypair -v `
+  -keystore android/banan-release.keystore `
+  -storetype JKS -alias banan -keyalg RSA -keysize 2048 -validity 10000 `
+  -storepass "<password>" -keypass "<password>" `
+  -dname "CN=Banan Charity Fund, OU=Charity, O=Banan, L=Taiz, ST=Taiz, C=YE"
+```
+
+- احتفظ بنسخة آمنة من `android/banan-release.keystore` و`ANDROID_KEYS.txt`.
+- **لا ترفعهما إلى GitHub.** كلاهما في `.gitignore`.
+- فقدان الـ keystore يعني أن التحديثات المستقبلية ستحتاج حذف التطبيق وإعادة تثبيته.
+
+### البناء
+
+```powershell
+npm run build
+npx cap sync android
+cd android
+./gradlew assembleRelease `
+  -PbananVersionCode=3 `
+  -PbananVersionName=1.0.3
+```
+
+أو اترك GitHub Actions يبني وينشر تلقائياً عند الدفع إلى `main`. يظهر الإصدار في
+**Releases** باسم `apk-1.0.<رقم التشغيل>`.
+
+> الطباعة تعمل بشكل أفضل في نسخة الويب. تصدير CSV في APK يستخدم قائمة المشاركة
+> (Filesystem + Share).
+
+---
+
+## 9. النسخ الاحتياطي والاستعادة
+
+### النسخ
+
+- من **الإعدادات → النسخ الاحتياطية → إنشاء نسخة الآن** (مدير فقط).
+- تُحفظ النسخة في bucket خاص `fund-backups`.
+- تُسجّل بياناتها في `fund_backups`.
+- يحتفظ النظام بآخر 30 نسخة ويحذف الأقدم.
+- يمكن تنزيل أي نسخة من زر **تنزيل**.
+
+محتوى الملف:
+
+```json
+{
+  "format": "banan-fund-backup",
+  "version": 1,
+  "generated_at": "...",
+  "generated_by": { "id": "...", "full_name": "...", "role": "admin" },
+  "counts": { "fund_members": 14, "...": 0 },
+  "data": {
+    "fund_settings": [],
+    "fund_user_profiles": [],
+    "fund_members": [],
+    "fund_subscriptions": [],
+    "fund_receipts": [],
+    "fund_expense_requests": [],
+    "fund_expense_approvals": [],
+    "fund_audit_logs": [],
+    "sequences": []
+  }
+}
+```
+
+لا تشمل النسخة `auth.users` أو كلمات المرور.
+
+### الاستعادة
+
+الاستعادة عملية حساسة. راجع `docs/استعادة-النسخة.md` (إن وجد) أو:
+
+1. خذ نسخة جديدة من الوضع الحالي.
+2. أوقف العمل على النظام مؤقتاً.
+3. استخدم سكربت/جلسة SQL لتفريغ الجداول بالترتيب الصحيح وإعادة إدخال البيانات.
+4. أعد تمكين trigger سجل التدقيق.
+5. اختبر الأرصدة والتقارير بعد الاستعادة.
+
+> لا تستعد نسخة قديمة فوق بيانات جديدة دون نسخة احتياطية من الوضع الحالي.
+
+---
+
+## 10. الأمان
+
+- RLS مفعّل على جداول الصندوق.
+- Edge Function تتحقق من JWT وتتحقق من الدور في كل مسار.
+- `service_role` يبقى داخل بيئة Supabase فقط.
+- سجل التدقيق غير قابل للتعديل أو الحذف (`trg_audit_no_change`).
+- ملفات المفاتيح المحلية:
+  - `SUPABASE_KEYS.txt` (رابط المشروع، anon، service، Management API، كلمة مرور
+    الحسابات التجريبية).
+  - `ANDROID_KEYS.txt` (كلمة مرور keystore).
+  - كلاهما في `.gitignore`.
+- غيّر كلمة مرور المدير التجريبية فور أول دخول من قائمة المستخدم.
+- لا تنشر `SUPABASE_KEYS.txt` أو `ANDROID_KEYS.txt` في أي مكان.
+
+---
+
+## 11. الحسابات التجريبية
+
+توجد حسابات تجريبية لأغراض العرض:
+
+| البريد | الدور |
+|---|---|
+| `admin@banan.org` | مدير النظام |
+| `accountant@banan.org` | محاسب |
+| `treasurer@banan.org` | أمين صندوق |
+| `board@banan.org` | عضو مجلس إدارة |
+| `member@banan.org` | عضو |
+
+كلمة المرور المشتركة محفوظة محلياً في `SUPABASE_KEYS.txt` تحت `DEMO_PASSWORD`، وليست
+مكتوبة في هذا المستودع. غيّرها فوراً بعد أول دخول.
+
+سكربت البذر يحتاج كلمة مرور قوية:
+
+```powershell
+$env:SEED_PASSWORD = "<strong-password>"
+node scripts/seed-supabase.mjs
+```
+
+---
+
+## 12. هيكل المشروع
 
 ```
-server/
-  migrations/        ترحيلات SQL مرقّمة (تُطبَّق مرة واحدة)
-  db.js              اتصال PostgreSQL + المعاملات + التدقيق + التسلسلات
-  auth.js            المصادقة والجلسات والصلاحيات
-  finance.js         الحسابات المالية (النقد، المتأخرات، الدفتر، كشف العضو)
-  storage.js         تخزين الملفات (محلي / Supabase)
-  realtime.js        بث SSE والإشعارات
-  routes/            مسارات API
-  seed.js            بيانات تجريبية
-  index.js           تشغيل Express
 src/
-  pages/             الشاشات
-  components/        المكوّنات المشتركة
-  lib/               API، المصادقة، التنسيق، التنبيهات
-  index.css          نظام التصميم RTL والطباعة
+  components/      الواجهات المشتركة (Layout, NotificationBell, BackupCard, ...)
+  lib/             api, auth, supabase, realtime, toast, format
+  pages/           Dashboard, Members, Subscriptions, Receipts, Expenses, Reports, Users, Audit, Settings
+  types.ts
 supabase/
-  migrations/        نسخة Supabase من الترحيلات + سياسات RLS
-android/             مشروع Capacitor (لاحقاً)
-.github/workflows/   بناء APK + نسخ احتياطي + نشر
+  functions/api/index.ts     Edge Function (Hono)
+  migrations/                0001, 0002, 0003
+scripts/
+  seed-supabase.mjs          بذر بيانات تجريبية
+  generate-icons.mjs         أيقونات PWA
+  generate-native-assets.mjs أيقونات/شاشات Capacitor
+android/                     مشروع Capacitor Android
+.github/workflows/           deploy-pages.yml + build-apk.yml
+docs/دليل-المستخدم.md
 ```
 
-## القواعد المحاسبية (غير قابلة للتفاوض)
+---
 
+## 13. استكشاف الأخطاء
+
+| المشكلة | الحل |
+|---|---|
+| صفحة بيضاء بعد النشر | حدّث الصفحة بقوة (Ctrl+F5) أو ألغِ تسجيل Service Worker من إعدادات المتصفح |
+| خطأ 401 | انتهت الجلسة. سجّل الدخول من جديد |
+| خطأ 403 | دور الحساب لا يملك الصلاحية |
+| بطء أول طلب | Cold start للـ Edge Function (2–4 ثوانٍ). الطلبات التالية أسرع |
+| فشل رفع ملف | تحقق من الحجم والنوع، ومن تسجيل الدخول |
+| فشل بناء APK | راجع سجل GitHub Actions؛ تأكد من أسرار keystore وAndroid SDK 36 |
+| فشل نشر Pages | تأكد أن الدفع إلى `main` وأن Pages Source = GitHub Actions |
+
+---
+
+## 14. ملاحظات الخطة المجانية
+
+- Supabase Free: قاعدة بيانات وAuth وStorage وRealtime وEdge Functions ضمن حدود
+  الاستخدام المجاني.
+- GitHub Pages مجاني للمستودعات العامة.
+- GitHub Actions مجاني ضمن دقائق الحساب.
+- لا حاجة لخادم شخصي يعمل دائماً.
+- راقب حدود Supabase (حجم القاعدة، التخزين، طلبات Edge Function) من لوحة المشروع.
+
+---
+
+## 15. النسخة القديمة (SQLite/Express)
+
+النسخة الأولى (Express + SQLite) محفوظة في الوسم:
+
+```powershell
+git checkout sqlite-reference
 ```
-النقد            = الرصيد الافتتاحي + المقبوضات − المصروفات المصروفة
-الملتزم به      = المصروفات المعتمدة غير المصروفة
-المتاح الصافي   = النقد − الملتزم به
-```
 
-- المتأخرات **لا** تُحسب نقداً.
-- لا يُصرف طلب إلا بعد **اعتمادين مستقلين**.
-- لا يعتمد المنشئ طلبه، ولا يعتمد الشخص نفسه مرتين.
-- الصرف الفعلي: مدير النظام أو أمين الصندوق، وبشرط كفاية النقد.
-- أرقام السندات متسلسلة وفريدة (`REC-0001`, `EXP-0001`, `PV-0001`).
-- سند الاشتراك يرتبط باستحقاق شهري ويحدّث المدفوع والحالة.
-- توليد الاستحقاقات يتخطى الأشهر الموجودة مسبقاً.
-- سجل التدقيق **للإضافة فقط** (لا تعديل ولا حذف).
-- أول مستخدم مسجّل يصبح مديراً باسم «مدير صندوق بنان الخير للبنيان».
-
-## الأمان
-
-- Scrypt لكلمات المرور، جلسات مجزّأة، كوكي `HttpOnly` + `SameSite=Lax`.
-- حد لمحاولات الدخول، وحماية من الطلبات عبر مواقع أخرى.
-- رفع ملفات بأسماء UUID والتحقق من النوع والحجم.
-- في الإنتاج: `COOKIE_SECURE=true`, `TRUST_PROXY=true`, HTTPS إلزامي.
-- مفتاح `SUPABASE_SERVICE_ROLE_KEY` يبقى على الخادم فقط، ولا يُرسل للواجهة أبداً.
-- RLS مفعّل على الجداول في Supabase، وواجهة PostgREST العامة معطّلة/محجوبة.
-
-## النسخ الاحتياطي
-
-- زر «نسخ احتياطي الآن» للمدير (قاعدة البيانات + المرفوعات) مع تنزيل مباشر.
-- نسخة تلقائية يومية مع الاحتفاظ بآخر 14 نسخة.
-- نسخة أسبوعية عبر GitHub Actions إلى Artifacts.
-- **مهم:** نزّل نسخة إلى جهازك أو Google Drive دورياً؛ النسخة على نفس المزوّد لا تحمي من فشله.
-
-## الصيانة والتحديثات
-
-- كل تغيير في قاعدة البيانات = ملف ترحيل جديد في `server/migrations/` (لا تعديل ملفات قديمة).
-- الترحيلات تُطبَّق تلقائياً عند الإقلاع (يمكن تعطيلها بـ`RUN_MIGRATIONS=false`).
-- النشر: `git push` → إعادة بناء تلقائية على المزوّد.
-- لا تُحذف أعمدة أو جداول دون ترحيل آمن ونسخة احتياطية.
-- الواجهة تقرأ من `src/lib/api.ts` فقط، فلا تتكرر عناوين الـAPI في الصفحات.
-
-## الترخيص
-
-خاص بصندوق بنان الخير للبنيان.
+الفرع `main` مخصص الآن لنسخة السحابة (Supabase). لا تستخدم خادم Express في الإنتاج.

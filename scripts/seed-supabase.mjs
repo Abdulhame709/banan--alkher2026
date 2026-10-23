@@ -4,13 +4,15 @@
  * Reads the project URL + keys from SUPABASE_KEYS.txt (gitignored).
  * Safe to run once on an empty project. If members already exist it stops.
  *
- * Usage: node scripts/seed-supabase.mjs
+ * Usage: SEED_PASSWORD='strong-password' node scripts/seed-supabase.mjs
  */
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 
-const base = 'C:/Users/Elite/Desktop/بنيان';
-const keysRaw = fs.readFileSync(`${base}/SUPABASE_KEYS.txt`, 'utf8');
+const base = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const keysRaw = fs.readFileSync(path.join(base, 'SUPABASE_KEYS.txt'), 'utf8');
 
 const url = keysRaw.match(/https:\/\/[a-z0-9]+\.supabase\.co/)?.[0];
 if (!url) throw new Error('PROJECT_URL not found in SUPABASE_KEYS.txt');
@@ -27,7 +29,11 @@ const anonKey = jwts.find((j) => roleOf(j) === 'anon');
 const serviceKey = jwts.find((j) => roleOf(j) === 'service_role');
 if (!anonKey || !serviceKey) throw new Error('anon/service_role keys not found');
 
-const PASSWORD = 'Banan@2026';
+const PASSWORD = process.env.SEED_PASSWORD;
+if (!PASSWORD || PASSWORD.length < 8) {
+  console.error('Set SEED_PASSWORD to a strong password (8+ characters) before seeding.');
+  process.exit(1);
+}
 
 async function request(path, { method = 'GET', body, prefer = 'return=representation', key = serviceKey } = {}) {
   const res = await fetch(url + path, {

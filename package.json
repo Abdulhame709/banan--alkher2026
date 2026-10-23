@@ -8,13 +8,19 @@
     "node": ">=22.5.0"
   },
   "scripts": {
-    "dev": "concurrently -k -n server,client -c green,yellow \"npm:dev:server\" \"npm:dev:client\"",
+    "dev": "vite",
+    "dev:legacy": "concurrently -k -n server,client -c green,yellow \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "node --env-file-if-exists=.env --watch server/index.js",
     "dev:client": "vite",
     "build": "vite build",
+    "preview": "vite preview",
     "start": "cross-env NODE_ENV=production node --env-file-if-exists=.env server/index.js",
     "db:migrate": "node --env-file-if-exists=.env server/migrate.js",
     "seed": "node --env-file-if-exists=.env server/seed.js",
+    "icons": "node scripts/generate-icons.mjs",
+    "native:assets": "node scripts/generate-native-assets.mjs",
+    "apk:sync": "npm run build && npx cap sync android",
+    "restore:backup": "node scripts/restore-backup.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

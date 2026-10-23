@@ -270,6 +270,7 @@ create table if not exists public.fund_backups (
   filename     text not null,
   size_bytes   bigint not null default 0,
   storage_path text not null,
+  counts       jsonb not null default '{}'::jsonb,
   created_by   uuid references auth.users(id) on delete set null,
   created_at   timestamptz not null default now()
 );
