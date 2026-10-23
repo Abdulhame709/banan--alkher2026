@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { Capacitor } from '@capacitor/core';
 
 export class ApiError extends Error {
   status: number;
@@ -105,6 +106,30 @@ export async function downloadCsv(path: string, fallbackName: string) {
   const disposition = response.headers.get('content-disposition') ?? '';
   const match = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
   const filename = match ? decodeURIComponent(match[1]) : fallbackName;
+
+  if (Capacitor.isNativePlatform()) {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }
+    const { Filesystem, Directory } = await import('@capacitor/filesystem');
+    const { Share } = await import('@capacitor/share');
+    const safeName = filename.replace(/[\\/:*?"<>|]/g, '-');
+    const saved = await Filesystem.writeFile({
+      path: safeName,
+      data: btoa(binary),
+      directory: Directory.Cache,
+    });
+    await Share.share({
+      title: safeName,
+      url: saved.uri,
+      dialogTitle: 'مشاركة التقرير',
+    });
+    return;
+  }
+
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;

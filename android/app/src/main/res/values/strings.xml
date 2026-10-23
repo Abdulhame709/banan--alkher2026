@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">صندوق بنان الخير</string>
+    <string name="title_activity_main">صندوق بنان الخير</string>
+    <string name="package_name">org.banan.fund</string>
+    <string name="custom_url_scheme">org.banan.fund</string>
+</resources>
