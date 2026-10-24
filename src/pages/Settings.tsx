@@ -44,7 +44,6 @@ export function SettingsPage() {
     default_monthly_fee: '1000',
     currency: 'ريال يمني',
     opening_balance: '0',
-    allow_self_approval_demo: false,
     allow_signups: true,
     auto_dues_enabled: true,
   });
@@ -61,7 +60,6 @@ export function SettingsPage() {
         default_monthly_fee: String(payload.settings.default_monthly_fee),
         currency: payload.settings.currency,
         opening_balance: String(payload.settings.opening_balance),
-        allow_self_approval_demo: Boolean(payload.settings.allow_self_approval_demo),
         allow_signups: Boolean(payload.settings.allow_signups),
         auto_dues_enabled: payload.settings.auto_dues_enabled !== false,
       });
@@ -92,7 +90,6 @@ export function SettingsPage() {
         default_monthly_fee: monthlyFee,
         currency: form.currency.trim(),
         opening_balance: parseAmount(form.opening_balance),
-        allow_self_approval_demo: form.allow_self_approval_demo,
         allow_signups: form.allow_signups,
         auto_dues_enabled: form.auto_dues_enabled,
       });
@@ -238,26 +235,10 @@ export function SettingsPage() {
                   <span className="switch" />
                 </span>
               </label>
-              <label className="setting-row">
-                <div>
-                  <strong>تجاوز اختبار الاعتماد الذاتي</strong>
-                  <span>السماح لمنشئ الطلب باعتماده بنفسه — للاختبار فقط. يُنصح بإبقائه معطلاً في التشغيل الفعلي.</span>
-                </div>
-                <span className="switch-field">
-                  <input
-                    type="checkbox"
-                    checked={form.allow_self_approval_demo}
-                    onChange={(event) => setForm((current) => ({ ...current, allow_self_approval_demo: event.target.checked }))}
-                  />
-                  <span className="switch" />
-                </span>
-              </label>
             </div>
-            {form.allow_self_approval_demo && (
-              <Alert tone="danger" title="تحذير رقابي">
-                تجاوز الاعتماد الذاتي يُضعف مبدأ الاعتماد المزدوج. استخدمه فقط أثناء اختبار النظام على حساب واحد.
-              </Alert>
-            )}
+            <Alert tone="success" title="اعتماد مزدوج إلزامي">
+              لا يمكن لمنشئ طلب الصرف اعتماده بنفسه، ولا يمكن للشخص نفسه اعتماد المرحلتين. هذا الإجراء ثابت في النظام ولا يمكن تجاوزه من الإعدادات.
+            </Alert>
           </Card>
 
           <div className="settings-save-bar">
@@ -292,7 +273,7 @@ export function SettingsPage() {
               <li><span>سجل التدقيق</span><strong>غير قابل للتعديل أو الحذف</strong></li>
               <li><span>جلسات الدخول</span><strong>Supabase Auth — مشفرة</strong></li>
               <li><span>التحديثات</span><strong>فورية بين المستخدمين</strong></li>
-              <li><span>سياسة الاعتماد</span><strong>{form.allow_self_approval_demo ? 'تجاوز اختباري مفعّل' : 'اعتماد مزدوج صارم'}</strong></li>
+              <li><span>سياسة الاعتماد</span><strong>اعتماد مزدوج صارم</strong></li>
             </ul>
           </Card>
 

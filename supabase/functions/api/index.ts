@@ -594,7 +594,7 @@ async function publicSettings() {
     default_monthly_fee: Number(settings.default_monthly_fee),
     allow_signups: Boolean(settings.allow_signups),
     auto_dues_enabled: Boolean(settings.auto_dues_enabled),
-    allow_self_approval_demo: Boolean(settings.allow_self_approval_demo),
+    allow_self_approval_demo: false,
   };
 }
 
@@ -962,8 +962,26 @@ app.get('/logo', async (c) => {
 });
 
 app.get('/files/:name', async (c) => {
-  await requireUser(c);
-  return serveStorageObject(c.req.param('name'));
+  const user = await requireUser(c);
+  const name = c.req.param('name');
+  const receiptFiles = await sql`select id, member_id from fund_receipts
+    where attachment_url = ${name} limit 1`;
+  const expenseFiles = await sql`select id from fund_expense_requests
+    where attachment_url = ${name} limit 1`;
+  if (!receiptFiles.length && !expenseFiles.length) {
+    throw new HttpError(404, 'لم يتم العثور على الملف');
+  }
+  if (user.role === 'member') {
+    const owned = receiptFiles.length > 0 && receiptFiles[0].member_id === user.linked_member_id;
+    if (!owned) throw new HttpError(403, 'لا تملك صلاحية الوصول إلى هذا الملف');
+  } else {
+    const allowed =
+      (receiptFiles.length > 0 && Boolean(user.permissions['receipts.view'])) ||
+      (expenseFiles.length > 0 && Boolean(user.permissions['expenses.view'])) ||
+      Boolean(user.permissions['settings.manage']);
+    if (!allowed) throw new HttpError(403, 'لا تملك صلاحية الوصول إلى هذا الملف');
+  }
+  return serveStorageObject(name);
 });
 
 app.get('/auth/me', async (c) => {
@@ -1566,6 +1584,7 @@ app.get('/receipts', async (c) => {
 
 app.get('/receipts/:id', async (c) => {
   const user = await requireUser(c);
+  if (user.role !== 'member') requireCap(user, 'receipts.view');
   const receipt = await getReceipt(c.req.param('id'));
   if (!receipt) throw new HttpError(404, 'السند غير موجود');
   if (user.role === 'member' && receipt.member_id !== user.linked_member_id) {
@@ -1929,12 +1948,11 @@ app.post('/expenses/:id/approve', async (c) => {
   const notes = str(body?.notes, { name: 'ملاحظات', max: 1000 });
 
   await sql.begin(async (tx) => {
-    const settings = await getSettings(tx);
     const rows = await tx`select * from fund_expense_requests where id = ${id} for update`;
     if (!rows.length) throw new HttpError(404, 'طلب الصرف غير موجود');
     const request = rows[0];
     if (request.status !== 'pending') throw new HttpError(409, 'لا يمكن الاعتماد: الطلب لم يعد بانتظار الاعتماد');
-    if (request.created_by === user.id && !settings.allow_self_approval_demo) {
+    if (request.created_by === user.id) {
       throw new HttpError(403, 'لا يمكنك اعتماد طلب قمت بإنشائه. يجب أن يعتمده شخص آخر');
     }
     const existing = await tx`select * from fund_expense_approvals where request_id = ${id} order by created_at asc`;
@@ -2548,7 +2566,7 @@ function protocolSettings(settings: any) {
     logo_url: settings.logo_url
       ? `${SUPABASE_URL}/functions/v1/api/logo?forceFunctionRegion=ap-southeast-2&v=${encodeURIComponent(settings.updated_at)}`
       : null,
-    allow_self_approval_demo: Boolean(settings.allow_self_approval_demo),
+    allow_self_approval_demo: false,
     allow_signups: Boolean(settings.allow_signups),
     auto_dues_enabled: Boolean(settings.auto_dues_enabled),
   };
@@ -2822,9 +2840,8 @@ app.patch('/settings', async (c) => {
       throw new HttpError(400, 'الرصيد الافتتاحي يجب أن يكون رقماً صحيحاً بدون كسور');
     }
   }
-  const selfApproval = body?.allow_self_approval_demo === undefined
-    ? Boolean(current.allow_self_approval_demo)
-    : bool(body.allow_self_approval_demo, false);
+  // Self-approval bypass is intentionally disabled in production.
+  const selfApproval = false;
   const allowSignups = body?.allow_signups === undefined
     ? Boolean(current.allow_signups)
     : bool(body.allow_signups, true);

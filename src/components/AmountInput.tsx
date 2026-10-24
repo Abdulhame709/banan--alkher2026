@@ -46,8 +46,12 @@ export function AmountInput({
       onChange={(event) => {
         const raw = event.target.value;
         // Reject decimal points, minus signs, letters and any other character
-        // instead of silently turning "1000.01" into "100001".
-        if (/[^\d,\s]/.test(raw)) return;
+        // instead of silently turning "1000.01" into "100001". Restore the
+        // displayed value immediately because no state update will happen.
+        if (/[^\d,\s]/.test(raw)) {
+          event.currentTarget.value = display;
+          return;
+        }
         const digits = raw.replace(/[^\d]/g, '').replace(/^0+(?=\d)/, '');
         onChange(digits);
       }}
