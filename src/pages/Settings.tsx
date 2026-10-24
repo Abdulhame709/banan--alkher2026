@@ -205,12 +205,12 @@ export function SettingsPage() {
           </Card>
 
           <Card>
-            <CardHeader title="خيارات التشغيل والرقابة" subtitle="ضبط التسجيل الذاتي وسياسة الاعتماد أثناء الاختبار" icon={<SlidersHorizontal size={19} />} />
+            <CardHeader title="خيارات التشغيل والرقابة" subtitle="ضبط التسجيل الذاتي وسياسة الاعتماد" icon={<SlidersHorizontal size={19} />} />
             <div className="settings-switches">
               <label className="setting-row">
                 <div>
                   <strong>السماح بالتسجيل الذاتي</strong>
-                  <span>تمكين المستخدمين من إنشاء حسابات جديدة من صفحة الدخول. الحسابات الجديدة تُنشأ بصلاحية «عضو».</span>
+                  <span>تمكين المستخدمين من إنشاء حسابات جديدة من صفحة الدخول. الحسابات الجديدة تُنشأ بصلاحية «عضو» وتنتظر موافقة الإدارة قبل تفعيلها.</span>
                 </div>
                 <span className="switch-field">
                   <input
