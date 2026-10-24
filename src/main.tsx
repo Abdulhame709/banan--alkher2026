@@ -16,6 +16,17 @@ if (Capacitor.isNativePlatform()) {
   });
 }
 
+// When a new service worker takes control, reload once so the user never keeps
+// seeing an old cached build after a deployment.
+if ('serviceWorker' in navigator && !Capacitor.isNativePlatform()) {
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (refreshing) return;
+    refreshing = true;
+    window.location.reload();
+  });
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <HashRouter>
