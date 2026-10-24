@@ -277,7 +277,7 @@ export function DashboardPage() {
           {capabilities?.addReceipts && (
             <button type="button" className="quick-action" onClick={() => navigate('/subscriptions?pay=1')}>
               <span className="quick-icon quick-emerald"><Banknote size={21} /></span>
-              <span><strong>تحصيل اشتراك</strong><small>سداد كلي أو جزئي</small></span>
+              <span><strong>تحصيل اشتراك</strong><small>سداد كامل الشهر فقط</small></span>
             </button>
           )}
           {capabilities?.addReceipts && (
@@ -289,7 +289,7 @@ export function DashboardPage() {
           {capabilities?.viewMembers && (
             <button type="button" className="quick-action" onClick={() => navigate('/subscriptions?generate=1')}>
               <span className="quick-icon quick-blue"><CalendarPlus size={21} /></span>
-              <span><strong>توليد استحقاقات الشهر</strong><small>لجميع الأعضاء النشطين</small></span>
+              <span><strong>استحقاقات فترة</strong><small>للفترات السابقة أو الجماعية</small></span>
             </button>
           )}
           {capabilities?.addExpenses && (

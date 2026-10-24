@@ -85,7 +85,7 @@ const emptyForm = {
 };
 
 export function ExpensesPage() {
-  const { user, capabilities, settings } = useAuth();
+  const { user, capabilities } = useAuth();
   const realtimeVersion = useRealtimeVersion();
   const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -264,7 +264,7 @@ export function ExpensesPage() {
     if (expense.status !== 'pending') return false;
     const alreadyApproved = expense.approvals.some((approval) => approval.approver_id === user?.id);
     if (alreadyApproved) return false;
-    if (expense.created_by === user?.id && !settings?.allow_self_approval_demo) return false;
+    if (expense.created_by === user?.id) return false;
     const stage = nextApprovalStage(expense);
     if (stage === 2 && expense.approvals.some((approval) => approval.decision === 'approved' && Number(approval.stage) === 2)) {
       return false;
