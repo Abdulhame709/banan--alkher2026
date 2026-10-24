@@ -249,7 +249,7 @@ npx cap sync android
 cd android
 ./gradlew assembleRelease `
   -PbananVersionCode=3 `
-  -PbananVersionName=1.0.3
+  -PbananVersionName=1.0.6
 ```
 
 أو اترك GitHub Actions يبني وينشر تلقائياً عند الدفع إلى `main`. يظهر الإصدار في
