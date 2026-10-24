@@ -919,7 +919,12 @@ app.use('*', async (c, next) => {
   c.header('X-Frame-Options', 'DENY');
   c.header('Referrer-Policy', 'no-referrer');
   c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  c.header('Cross-Origin-Resource-Policy', 'same-site');
+  // The PWA and the Android WebView are served from a different origin than
+  // Supabase. Logos and private attachments must therefore be embeddable
+  // cross-origin (they are still protected by the token/permission checks).
+  const assetPath = c.req.path;
+  const isEmbeddableAsset = assetPath.endsWith('/logo') || assetPath.includes('/files/');
+  c.header('Cross-Origin-Resource-Policy', isEmbeddableAsset ? 'cross-origin' : 'same-site');
 });
 app.use('*', async (c, next) => {
   if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(c.req.method) && !c.req.path.endsWith('/cron/dues')) {

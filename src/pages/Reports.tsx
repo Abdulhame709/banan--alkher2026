@@ -42,6 +42,7 @@ import {
   Tabs,
 } from '../components/ui';
 import { HijriDateInput } from '../components/HijriInputs';
+import { currentHijriYear, fromHijri } from '../lib/hijri';
 import { ReportPrint } from '../components/PrintSheet';
 import type { CashLedger, Member } from '../types';
 
@@ -135,7 +136,8 @@ interface DisbursementRow {
   disbursed_date: string;
 }
 
-const firstOfYear = () => `${todayISO().slice(0, 4)}-01-01`;
+const firstOfYear = () =>
+  fromHijri(currentHijriYear(), 1, 1) ?? `${todayISO().slice(0, 4)}-01-01`;
 
 export function ReportsPage() {
   const toast = useToast();
