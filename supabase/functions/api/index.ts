@@ -521,7 +521,11 @@ async function verifyAuthUser(token: string) {
 
 async function requireUser(c: any) {
   const header = c.req.header('Authorization') ?? '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : c.req.query('token');
+  // Query-string tokens are only accepted for private file previews, where the
+  // browser cannot attach an Authorization header. Never accept them on normal
+  // API routes because URLs can leak through logs and referrers.
+  const queryToken = c.req.path.includes('/files/') ? c.req.query('token') : undefined;
+  const token = header.startsWith('Bearer ') ? header.slice(7) : queryToken;
   if (!token) throw new HttpError(401, 'يجب تسجيل الدخول أولاً');
 
   const authUser = await verifyAuthUser(token);
