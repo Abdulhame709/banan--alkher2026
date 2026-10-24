@@ -91,41 +91,40 @@ export function Layout() {
 
   if (!user || !capabilities) return null;
 
-  const isInternal = user.role !== 'member';
   const navItems: NavItem[] = [
     {
       path: '/',
       label: 'لوحة التحكم',
       shortLabel: 'الرئيسية',
       icon: <LayoutDashboard size={20} />,
-      show: true,
+      show: user.role === 'member' || capabilities.viewDashboard,
     },
     {
       path: '/members',
       label: 'الأعضاء',
       icon: <Users size={20} />,
-      show: isInternal,
+      show: capabilities.viewMembers,
     },
     {
       path: '/subscriptions',
       label: 'الاستحقاقات الشهرية',
       shortLabel: 'الاستحقاقات',
       icon: <CalendarClock size={20} />,
-      show: isInternal,
+      show: capabilities.viewSubscriptions,
     },
     {
       path: '/receipts',
       label: 'سندات القبض والتبرعات',
       shortLabel: 'السندات',
       icon: <ReceiptText size={20} />,
-      show: capabilities.manageReceipts || user.role === 'board_member',
+      show: capabilities.viewReceipts,
     },
     {
       path: '/expenses',
       label: 'طلبات الصرف والاعتمادات',
       shortLabel: 'الصرف',
       icon: <HandCoins size={20} />,
-      show: isInternal,
+      show: capabilities.viewExpenses,
     },
     {
       path: '/reports',
@@ -138,14 +137,14 @@ export function Layout() {
       path: '/users',
       label: 'المستخدمون والصلاحيات',
       icon: <UserCog size={20} />,
-      show: capabilities.admin,
+      show: capabilities.manageUsers,
       section: 'الإدارة',
     },
     {
       path: '/settings',
       label: 'إعدادات الصندوق',
       icon: <Settings size={20} />,
-      show: capabilities.admin,
+      show: capabilities.manageSettings,
       section: 'الإدارة',
     },
     {
@@ -283,7 +282,7 @@ export function Layout() {
             </div>
           </div>
           <div className="topbar-actions">
-            {isInternal && (
+            {capabilities.viewExpenses && (
               <NavLink to="/expenses" className="topbar-quick" title="مركز الاعتمادات">
                 <ShieldCheck size={18} />
                 <span>مركز الاعتمادات</span>
@@ -314,11 +313,11 @@ export function Layout() {
                       <em>{ROLE_LABELS[user.role]}</em>
                     </div>
                   </div>
-                  {capabilities.admin && (
-                    <>
-                      <NavLink to="/users" className="dropdown-link"><UserCog size={17} /> المستخدمون والصلاحيات</NavLink>
-                      <NavLink to="/settings" className="dropdown-link"><Settings size={17} /> إعدادات الصندوق</NavLink>
-                    </>
+                  {capabilities.manageUsers && (
+                    <NavLink to="/users" className="dropdown-link"><UserCog size={17} /> المستخدمون والصلاحيات</NavLink>
+                  )}
+                  {capabilities.manageSettings && (
+                    <NavLink to="/settings" className="dropdown-link"><Settings size={17} /> إعدادات الصندوق</NavLink>
                   )}
                   {capabilities.viewAudit && (
                     <NavLink to="/audit" className="dropdown-link"><ScrollText size={17} /> سجل التدقيق</NavLink>

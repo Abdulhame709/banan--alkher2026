@@ -1,0 +1,34 @@
+name: Keep-alive and monthly dues
+
+on:
+  schedule:
+    # Twice a day so a delayed GitHub run never leaves the database idle for a week.
+    - cron: '17 3 * * *'
+    - cron: '17 15 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake database
+        env:
+          API_BASE: ${{ secrets.VITE_API_BASE_URL }}
+        run: |
+          if [ -z "$API_BASE" ]; then echo "VITE_API_BASE_URL secret is missing"; exit 1; fi
+          curl --fail --silent --show-error --retry 3 --retry-delay 5 "$API_BASE/health?db=1"
+          echo "Database is awake."
+
+      - name: Post current Hijri month dues
+        env:
+          API_BASE: ${{ secrets.VITE_API_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then echo "CRON_SECRET secret is missing"; exit 1; fi
+          curl --fail --silent --show-error --retry 3 --retry-delay 5 \
+            -H "x-cron-secret: $CRON_SECRET" \
+            "$API_BASE/cron/dues"
+          echo "Monthly dues task finished."

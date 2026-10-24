@@ -1,10 +1,13 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   CalendarClock,
+  Download,
   Edit3,
   FileText,
   Plus,
+  Trash2,
+  Upload,
   UserCheck,
   UserPlus,
   Users,
@@ -14,7 +17,10 @@ import { api, apiErrorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useRealtimeVersion } from '../lib/realtime';
 import { useToast } from '../lib/toast';
-import { formatDate, formatNumber, money, todayISO } from '../lib/format';
+import { formatNumber, money, todayISO } from '../lib/format';
+import { AmountInput, parseAmount } from '../components/AmountInput';
+import { HijriDateInput } from '../components/HijriInputs';
+import { fromHijri } from '../lib/hijri';
 import {
   Alert,
   Badge,
@@ -75,6 +81,8 @@ export function MembersPage() {
     receipts: Receipt[];
   } | null>(null);
   const [statementLoading, setStatementLoading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
 
   async function load(showSpinner = true) {
     if (showSpinner) setLoading(true);
@@ -134,13 +142,18 @@ export function MembersPage() {
       setFormError('اسم العضو مطلوب (3 أحرف على الأقل)');
       return;
     }
+    const monthlyFee = parseAmount(form.monthly_fee);
+    if (monthlyFee <= 0) {
+      setFormError('أدخل اشتراكاً شهرياً صحيحاً أكبر من صفر (بدون كسور)');
+      return;
+    }
     setSaving(true);
     try {
       const body = {
         full_name: form.full_name.trim(),
         phone: form.phone.trim(),
         address: form.address.trim(),
-        monthly_fee: Number(form.monthly_fee || 0),
+        monthly_fee: monthlyFee,
         joined_on: form.joined_on,
         active: form.active,
         notes: form.notes.trim(),
@@ -177,6 +190,125 @@ export function MembersPage() {
     }
   }
 
+  async function exportMembers() {
+    try {
+      const writeXlsxFile = (await import('write-excel-file/browser')).default;
+      const rows: any[][] = [
+        ['رقم العضوية', 'الاسم', 'الهاتف', 'العنوان', 'الاشتراك الشهري', 'تاريخ الانضمام', 'الحالة', 'ملاحظات'],
+        ...members.map((member) => [
+          member.member_no,
+          member.full_name,
+          member.phone ?? '',
+          member.address ?? '',
+          Number(member.monthly_fee),
+          member.joined_on ?? '',
+          member.active ? 'نشط' : 'موقوف',
+          member.notes ?? '',
+        ]),
+      ];
+      await writeXlsxFile(rows, { sheet: 'الأعضاء', rightToLeft: true }).toFile('اعضاء-صندوق-بنان.xlsx');
+      toast.success('تم تصدير قائمة الأعضاء إلى Excel');
+    } catch (exportError) {
+      toast.error(apiErrorMessage(exportError));
+    }
+  }
+
+  function parseCsv(text: string): string[][] {
+    const rows: string[][] = [];
+    let row: string[] = [];
+    let cell = '';
+    let quoted = false;
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      if (quoted) {
+        if (char === '"' && text[index + 1] === '"') { cell += '"'; index += 1; }
+        else if (char === '"') quoted = false;
+        else cell += char;
+      } else if (char === '"') quoted = true;
+      else if (char === ',') { row.push(cell); cell = ''; }
+      else if (char === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+      else if (char !== '\r') cell += char;
+    }
+    if (cell || row.length) { row.push(cell); rows.push(row); }
+    return rows;
+  }
+
+  function parseImportedDate(value: unknown): string {
+    if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+    if (typeof value === 'number') {
+      return new Date(Date.UTC(1899, 11, 30) + Math.round(value) * 86400000).toISOString().slice(0, 10);
+    }
+    const text = String(value ?? '').trim();
+    const hijri = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(text);
+    if (hijri && Number(hijri[1]) < 1500) {
+      return fromHijri(Number(hijri[1]), Number(hijri[2]), Number(hijri[3])) ?? todayISO();
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+    return todayISO();
+  }
+
+  async function importFile(file: File) {
+    setImporting(true);
+    try {
+      let rows: any[][] = [];
+      if (file.name.toLowerCase().endsWith('.csv')) {
+        rows = parseCsv(await file.text());
+      } else {
+        const { readSheet } = await import('read-excel-file/browser');
+        rows = await readSheet(file);
+      }
+      if (!rows.length) throw new Error('الملف فارغ');
+      const headers = rows[0].map((value) => String(value ?? '').trim());
+      const find = (...names: string[]) => headers.findIndex((header) => names.includes(header));
+      const nameIndex = find('الاسم', 'اسم العضو', 'full_name');
+      const phoneIndex = find('الهاتف', 'رقم الهاتف', 'phone');
+      const addressIndex = find('العنوان', 'address');
+      const feeIndex = find('الاشتراك الشهري', 'الاشتراك', 'monthly_fee');
+      const joinedIndex = find('تاريخ الانضمام', 'joined_on');
+      const activeIndex = find('الحالة', 'active');
+      const notesIndex = find('ملاحظات', 'notes');
+      if (nameIndex < 0) throw new Error('الملف يجب أن يحتوي على عمود «الاسم»');
+      const imported = rows.slice(1)
+        .filter((row) => String(row[nameIndex] ?? '').trim())
+        .map((row) => ({
+          full_name: String(row[nameIndex] ?? '').trim(),
+          phone: phoneIndex >= 0 ? String(row[phoneIndex] ?? '').trim() : '',
+          address: addressIndex >= 0 ? String(row[addressIndex] ?? '').trim() : '',
+          monthly_fee: feeIndex >= 0 ? parseAmount(row[feeIndex] as any) : Number(settings?.default_monthly_fee ?? 1000),
+          joined_on: joinedIndex >= 0 ? parseImportedDate(row[joinedIndex]) : todayISO(),
+          active: activeIndex >= 0
+            ? !['موقوف', 'غير نشط', '0', 'false', 'لا'].includes(String(row[activeIndex] ?? '').trim())
+            : true,
+          notes: notesIndex >= 0 ? String(row[notesIndex] ?? '').trim() : '',
+        }));
+      if (!imported.length) throw new Error('لا توجد صفوف صالحة للاستيراد');
+      const invalidFee = imported.find((row) => !Number.isInteger(row.monthly_fee) || row.monthly_fee <= 0);
+      if (invalidFee) {
+        throw new Error(`الاشتراك الشهري للعضو «${invalidFee.full_name}» غير صالح. استخدم رقماً صحيحاً أكبر من صفر بدون كسور.`);
+      }
+      const result = await api.post<{ imported: number; skipped: number; errors: string[] }>('/members/import', { members: imported });
+      toast.success(`تم استيراد ${formatNumber(result.imported)} عضو، وتخطي ${formatNumber(result.skipped)}`);
+      if (result.errors?.length) toast.error(result.errors[0]);
+      await load(false);
+    } catch (importError) {
+      toast.error(apiErrorMessage(importError));
+    } finally {
+      setImporting(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  }
+
+  async function deleteMember(member: Member) {
+    if (!window.confirm(`هل تريد حذف العضو «${member.full_name}»؟ لا يمكن التراجع.`)) return;
+    try {
+      await api.del(`/members/${member.id}`);
+      toast.success('تم حذف العضو');
+      await load(false);
+    } catch (deleteError) {
+      toast.error(apiErrorMessage(deleteError));
+    }
+  }
+
   const totals = members.reduce(
     (acc, member) => ({
       accrued: acc.accrued + member.total_accrued,
@@ -197,7 +329,29 @@ export function MembersPage() {
             <Button variant="secondary" icon={<CalendarClock size={17} />} onClick={() => navigate('/subscriptions')}>
               الاستحقاقات الشهرية
             </Button>
-            {capabilities?.manageMembers && (
+            {capabilities?.exportMembers && (
+              <Button variant="secondary" icon={<Download size={17} />} onClick={exportMembers}>
+                تصدير Excel
+              </Button>
+            )}
+            {capabilities?.importMembers && (
+              <>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".xlsx,.csv"
+                  hidden
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) importFile(file);
+                  }}
+                />
+                <Button variant="secondary" icon={<Upload size={17} />} loading={importing} onClick={() => fileRef.current?.click()}>
+                  استيراد Excel
+                </Button>
+              </>
+            )}
+            {capabilities?.addMembers && (
               <Button icon={<Plus size={17} />} onClick={openCreate}>إضافة عضو</Button>
             )}
           </>
@@ -230,7 +384,7 @@ export function MembersPage() {
             title={search ? 'لا توجد نتائج مطابقة' : 'لا يوجد أعضاء مسجلون'}
             description={search ? 'جرّب تعديل كلمة البحث أو الفلتر.' : 'ابدأ بإضافة أول عضو إلى الصندوق.'}
             icon={<UserPlus size={28} />}
-            action={capabilities?.manageMembers && !search ? <Button onClick={openCreate}>إضافة عضو</Button> : undefined}
+            action={capabilities?.addMembers && !search ? <Button onClick={openCreate}>إضافة عضو</Button> : undefined}
           />
         ) : (
           <div className="table-wrap">
@@ -282,9 +436,14 @@ export function MembersPage() {
                         <button type="button" className="icon-btn" title="كشف حساب وطباعة" onClick={() => openStatement(member)} disabled={statementLoading}>
                           <FileText size={16} />
                         </button>
-                        {capabilities?.manageMembers && (
+                        {capabilities?.editMembers && (
                           <button type="button" className="icon-btn" title="تعديل" onClick={() => openEdit(member)}>
                             <Edit3 size={16} />
+                          </button>
+                        )}
+                        {capabilities?.deleteMembers && (
+                          <button type="button" className="icon-btn danger-text" title="حذف" onClick={() => deleteMember(member)}>
+                            <Trash2 size={16} />
                           </button>
                         )}
                       </div>
@@ -338,11 +497,11 @@ export function MembersPage() {
               <Field label="العنوان">
                 <TextInput value={form.address} onChange={(e) => update('address', e.target.value)} placeholder="الغدير - مقبنة - تعز" />
               </Field>
-              <Field label="الاشتراك الشهري (ر.ي)" required hint="يُستخدم عند توليد الاستحقاقات القادمة">
-                <TextInput type="number" min="0" step="1" value={form.monthly_fee} onChange={(e) => update('monthly_fee', e.target.value)} required />
+              <Field label="الاشتراك الشهري (ر.ي)" required hint="أرقام صحيحة فقط — يُستخدم عند توليد الاستحقاقات القادمة">
+                <AmountInput value={form.monthly_fee} onChange={(value) => update('monthly_fee', value)} required />
               </Field>
-              <Field label="تاريخ الانضمام">
-                <TextInput type="date" value={form.joined_on} onChange={(e) => update('joined_on', e.target.value)} />
+              <Field label="تاريخ الانضمام (هجري)">
+                <HijriDateInput value={form.joined_on} onChange={(value) => update('joined_on', value)} />
               </Field>
               <Field label="حالة العضوية">
                 <label className="switch-field">

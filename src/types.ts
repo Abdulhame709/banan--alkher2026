@@ -1,4 +1,11 @@
-export type Role = 'admin' | 'accountant' | 'treasurer' | 'board_member' | 'member';
+export type Role =
+  | 'admin'
+  | 'fund_manager'
+  | 'secretary_general'
+  | 'accountant'
+  | 'treasurer'
+  | 'board_member'
+  | 'member';
 
 export interface User {
   id: string;
@@ -8,11 +15,14 @@ export interface User {
   role: Role;
   role_label: string;
   active: number | boolean;
+  approval_status: 'pending' | 'approved' | 'rejected';
+  permissions: Record<string, boolean>;
   linked_member_id: string | null;
   created_at: string;
 }
 
 export interface Capabilities {
+  /* Legacy capabilities kept for the existing screens. */
   manageMembers: boolean;
   manageReceipts: boolean;
   createExpenses: boolean;
@@ -21,6 +31,37 @@ export interface Capabilities {
   viewReports: boolean;
   viewAudit: boolean;
   admin: boolean;
+
+  /* Granular capabilities driven by the per-user permissions matrix. */
+  viewDashboard: boolean;
+  viewMembers: boolean;
+  addMembers: boolean;
+  editMembers: boolean;
+  deleteMembers: boolean;
+  importMembers: boolean;
+  exportMembers: boolean;
+  viewSubscriptions: boolean;
+  addSubscriptions: boolean;
+  editSubscriptions: boolean;
+  deleteSubscriptions: boolean;
+  paySubscriptions: boolean;
+  viewReceipts: boolean;
+  addReceipts: boolean;
+  editReceipts: boolean;
+  deleteReceipts: boolean;
+  printReceipts: boolean;
+  viewExpenses: boolean;
+  addExpenses: boolean;
+  editExpenses: boolean;
+  deleteExpenses: boolean;
+  printExpenses: boolean;
+  exportReports: boolean;
+  printReports: boolean;
+  manageUsers: boolean;
+  manageSettings: boolean;
+  manageBackups: boolean;
+  restoreBackup: boolean;
+  permissions: Record<string, boolean>;
 }
 
 export interface PublicSettings {
@@ -29,6 +70,7 @@ export interface PublicSettings {
   currency: string;
   default_monthly_fee: number;
   allow_signups: boolean;
+  auto_dues_enabled: boolean;
   allow_self_approval_demo?: boolean;
 }
 
@@ -37,6 +79,7 @@ export interface FundSettings extends PublicSettings {
   logo_file: string | null;
   opening_balance: number;
   allow_self_approval_demo: boolean;
+  auto_dues_enabled: boolean;
   updated_at: string;
 }
 
@@ -70,6 +113,9 @@ export interface Subscription {
   id: string;
   member_id: string;
   due_month: string;
+  hijri_year: number | null;
+  hijri_month: number | null;
+  hijri_label?: string;
   amount: number;
   paid_amount: number;
   status: SubscriptionStatus;
@@ -119,6 +165,7 @@ export interface ExpenseApproval {
   approver_id: string;
   approver_name: string;
   approver_role: string;
+  stage: 1 | 2;
   decision: 'approved' | 'rejected';
   notes: string | null;
   created_at: string;

@@ -25,6 +25,7 @@ import {
   TextInput,
 } from '../components/ui';
 import { FileUpload } from '../components/FileUpload';
+import { AmountInput, parseAmount } from '../components/AmountInput';
 import { BackupCard } from '../components/BackupCard';
 import { Emblem } from '../components/Logo';
 import type { FundSettings } from '../types';
@@ -45,6 +46,7 @@ export function SettingsPage() {
     opening_balance: '0',
     allow_self_approval_demo: false,
     allow_signups: true,
+    auto_dues_enabled: true,
   });
 
   async function load() {
@@ -61,6 +63,7 @@ export function SettingsPage() {
         opening_balance: String(payload.settings.opening_balance),
         allow_self_approval_demo: Boolean(payload.settings.allow_self_approval_demo),
         allow_signups: Boolean(payload.settings.allow_signups),
+        auto_dues_enabled: payload.settings.auto_dues_enabled !== false,
       });
     } catch (loadError) {
       setError(apiErrorMessage(loadError));
@@ -76,16 +79,22 @@ export function SettingsPage() {
   async function submit(event: FormEvent) {
     event.preventDefault();
     setFormError('');
+    const monthlyFee = parseAmount(form.default_monthly_fee);
+    if (monthlyFee <= 0) {
+      setFormError('أدخل اشتراكاً شهرياً صحيحاً أكبر من صفر (بدون كسور)');
+      return;
+    }
     setSaving(true);
     try {
       const payload = await api.patch<{ settings: FundSettings }>('/settings', {
         fund_name: form.fund_name.trim(),
         logo_file: form.logo_file,
-        default_monthly_fee: Number(form.default_monthly_fee || 0),
+        default_monthly_fee: monthlyFee,
         currency: form.currency.trim(),
-        opening_balance: Number(form.opening_balance || 0),
+        opening_balance: parseAmount(form.opening_balance),
         allow_self_approval_demo: form.allow_self_approval_demo,
         allow_signups: form.allow_signups,
+        auto_dues_enabled: form.auto_dues_enabled,
       });
       setSettings(payload.settings);
       toast.success('تم حفظ إعدادات الصندوق بنجاح');
@@ -137,13 +146,10 @@ export function SettingsPage() {
                     required
                   />
                 </Field>
-                <Field label="الاشتراك الشهري الافتراضي (ر.ي)" required hint="يُستخدم عند إضافة عضو جديد">
-                  <TextInput
-                    type="number"
-                    min="0"
-                    step="1"
+                <Field label="الاشتراك الشهري الافتراضي (ر.ي)" required hint="أرقام صحيحة فقط — يُستخدم عند إضافة عضو جديد">
+                  <AmountInput
                     value={form.default_monthly_fee}
-                    onChange={(event) => setForm((current) => ({ ...current, default_monthly_fee: event.target.value }))}
+                    onChange={(value) => setForm((current) => ({ ...current, default_monthly_fee: value }))}
                     required
                   />
                 </Field>
@@ -182,12 +188,10 @@ export function SettingsPage() {
           <Card>
             <CardHeader title="الإعدادات المالية" subtitle="الرصيد الافتتاحي يؤثر مباشرة على الرصيد النقدي الفعلي" icon={<Wallet size={19} />} />
             <div className="form-grid two">
-              <Field label="الرصيد الافتتاحي (ر.ي)" required hint="الرصيد النقدي عند بداية استخدام النظام">
-                <TextInput
-                  type="number"
-                  step="0.01"
+              <Field label="الرصيد الافتتاحي (ر.ي)" required hint="أرقام صحيحة فقط — الرصيد النقدي عند بداية استخدام النظام">
+                <AmountInput
                   value={form.opening_balance}
-                  onChange={(event) => setForm((current) => ({ ...current, opening_balance: event.target.value }))}
+                  onChange={(value) => setForm((current) => ({ ...current, opening_balance: value }))}
                   required
                 />
               </Field>
@@ -216,6 +220,20 @@ export function SettingsPage() {
                     type="checkbox"
                     checked={form.allow_signups}
                     onChange={(event) => setForm((current) => ({ ...current, allow_signups: event.target.checked }))}
+                  />
+                  <span className="switch" />
+                </span>
+              </label>
+              <label className="setting-row">
+                <div>
+                  <strong>توليد الاستحقاقات الشهرية تلقائياً</strong>
+                  <span>إنشاء استحقاق الشهر الهجري الجديد لجميع الأعضاء النشطين عند أول دخول أو عبر المهمة اليومية. لا حاجة للضغط على زر التوليد كل شهر.</span>
+                </div>
+                <span className="switch-field">
+                  <input
+                    type="checkbox"
+                    checked={form.auto_dues_enabled}
+                    onChange={(event) => setForm((current) => ({ ...current, auto_dues_enabled: event.target.checked }))}
                   />
                   <span className="switch" />
                 </span>

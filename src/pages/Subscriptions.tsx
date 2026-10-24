@@ -6,25 +6,22 @@ import {
   CalendarPlus,
   CheckCircle2,
   Coins,
-  CreditCard,
+  Edit3,
   Printer,
   ReceiptText,
-  Search,
+  Trash2,
   Wallet,
 } from 'lucide-react';
 import { api, apiErrorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useRealtimeVersion } from '../lib/realtime';
 import { useToast } from '../lib/toast';
+import { formatNumber, money, monthLabel, monthOptions, subscriptionStatus, todayISO } from '../lib/format';
 import {
-  formatDate,
-  formatNumber,
-  money,
-  monthLabel,
-  monthOptions,
-  subscriptionStatus,
-  todayISO,
-} from '../lib/format';
+  currentHijriMonthKey,
+  hijriMonthKey,
+  hijriMonthLabel,
+} from '../lib/hijri';
 import {
   Alert,
   Badge,
@@ -41,10 +38,11 @@ import {
   StatCard,
   Tabs,
   TextInput,
-  Textarea,
 } from '../components/ui';
+import { AmountInput, parseAmount } from '../components/AmountInput';
+import { HijriDateInput, HijriMonthInput } from '../components/HijriInputs';
 import { ReceiptVoucher } from '../components/PrintSheet';
-import type { Receipt, Subscription } from '../types';
+import type { Member, Receipt, Subscription } from '../types';
 
 interface SubscriptionSummary {
   count: number;
@@ -58,7 +56,7 @@ export function SubscriptionsPage() {
   const realtimeVersion = useRealtimeVersion();
   const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [month, setMonth] = useState(monthOptions().find((option) => option.value === todayISO().slice(0, 7))?.value ?? todayISO().slice(0, 7));
+  const [month, setMonth] = useState(currentHijriMonthKey());
   const [status, setStatus] = useState<'all' | 'unpaid' | 'partial' | 'paid'>(
     searchParams.get('status') === 'unpaid' ? 'unpaid' : 'all'
   );
@@ -69,14 +67,17 @@ export function SubscriptionsPage() {
   const [error, setError] = useState('');
 
   const [generateOpen, setGenerateOpen] = useState(
-    searchParams.get('generate') === '1' && Boolean(capabilities?.manageMembers)
+    searchParams.get('generate') === '1' && Boolean(capabilities?.addSubscriptions)
   );
-  const [generateMonth, setGenerateMonth] = useState(month);
+  const [generateFrom, setGenerateFrom] = useState(month);
+  const [generateTo, setGenerateTo] = useState(month);
+  const [generateMembers, setGenerateMembers] = useState<Member[]>([]);
+  const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
   const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState('');
 
   const [paying, setPaying] = useState<Subscription | null>(null);
   const [payForm, setPayForm] = useState({
-    amount: '',
     payment_method: 'cash',
     receipt_date: todayISO(),
     notes: '',
@@ -85,13 +86,18 @@ export function SubscriptionsPage() {
   const [paymentError, setPaymentError] = useState('');
   const [printReceipt, setPrintReceipt] = useState<Receipt | null>(null);
 
-  const months = useMemo(() => monthOptions(18, 3), []);
+  const [editingDue, setEditingDue] = useState<Subscription | null>(null);
+  const [editForm, setEditForm] = useState({ amount: '', month: currentHijriMonthKey() });
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState('');
+
+  const months = useMemo(() => monthOptions(30, 4), []);
 
   async function load(showSpinner = true) {
     if (showSpinner) setLoading(true);
     setError('');
     try {
-      const params = new URLSearchParams({ month });
+      const params = new URLSearchParams({ hijri: month });
       if (status !== 'all') params.set('status', status);
       if (search.trim()) params.set('search', search.trim());
       const payload = await api.get<{
@@ -115,54 +121,52 @@ export function SubscriptionsPage() {
 
   useEffect(() => {
     load();
-    if (searchParams.get('generate') === '1' && capabilities?.manageMembers) {
-      setGenerateMonth(searchParams.get('month') ?? month);
-      setGenerateOpen(true);
+    if (searchParams.get('generate') === '1' && capabilities?.addSubscriptions) {
+      setGenerateFrom(searchParams.get('month') ?? month);
+      setGenerateTo(searchParams.get('month') ?? month);
+      openGenerate();
     }
     if (searchParams.get('pay') === '1') {
       toast.info('اختر استحقاقاً غير مسدد من القائمة لتسجيل السداد');
     }
-    if (searchParams.toString()) {
-      setSearchParams({}, { replace: true });
-    }
+    if (searchParams.toString()) setSearchParams({}, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  async function openGenerate() {
+    setGenerateError('');
+    setGenerateOpen(true);
+    if (!generateMembers.length) {
+      try {
+        const payload = await api.get<{ members: Member[] }>('/members?status=active');
+        setGenerateMembers(payload.members);
+        setSelectedMemberIds(payload.members.map((member) => member.id));
+      } catch (loadError) {
+        setGenerateError(apiErrorMessage(loadError));
+      }
+    }
+  }
+
   function openPayment(subscription: Subscription) {
-    const remaining = subscription.remaining ?? subscription.amount - subscription.paid_amount;
     setPaying(subscription);
     setPaymentError('');
-    setPayForm({
-      amount: String(remaining),
-      payment_method: 'cash',
-      receipt_date: todayISO(),
-      notes: '',
-    });
+    setPayForm({ payment_method: 'cash', receipt_date: todayISO(), notes: '' });
   }
 
   async function submitPayment(event: FormEvent) {
     event.preventDefault();
     if (!paying) return;
     setPaymentError('');
-    const amount = Number(payForm.amount);
     const remaining = paying.remaining ?? paying.amount - paying.paid_amount;
-    if (!Number.isFinite(amount) || amount <= 0) {
-      setPaymentError('أدخل مبلغاً صحيحاً أكبر من صفر');
-      return;
-    }
-    if (amount > remaining) {
-      setPaymentError(`المبلغ يتجاوز المتبقي (${money(remaining)})`);
-      return;
-    }
     setSavingPayment(true);
     try {
       const payload = await api.post<{ receipt: Receipt }>(`/subscriptions/${paying.id}/pay`, {
-        amount,
+        amount: remaining,
         payment_method: payForm.payment_method,
         receipt_date: payForm.receipt_date,
         notes: payForm.notes,
       });
-      toast.success('تم تسجيل السداد وإصدار سند القبض بنجاح');
+      toast.success('تم سداد كامل الاستحقاق وإصدار سند القبض');
       setPaying(null);
       setPrintReceipt(payload.receipt);
       await load(false);
@@ -175,44 +179,107 @@ export function SubscriptionsPage() {
 
   async function generate(event: FormEvent) {
     event.preventDefault();
+    setGenerateError('');
+    if (!selectedMemberIds.length) {
+      setGenerateError('اختر عضواً واحداً على الأقل');
+      return;
+    }
     setGenerating(true);
     try {
-      const payload = await api.post<{ generated: number; skipped: number; month_label: string }>(
-        '/subscriptions/generate',
-        { month: generateMonth }
-      );
+      const payload = await api.post<{
+        generated: number;
+        skipped: number;
+        months: number;
+        month_labels: string[];
+      }>('/subscriptions/generate', {
+        from_hijri: generateFrom,
+        to_hijri: generateTo,
+        member_ids: selectedMemberIds,
+      });
       toast.success(
-        `تم توليد ${payload.generated} استحقاقاً لشهر ${payload.month_label}، وتخطي ${payload.skipped} عضواً لديه استحقاق مسبق`
+        `تم توليد ${formatNumber(payload.generated)} استحقاقاً على ${formatNumber(payload.months)} شهراً، وتخطي ${formatNumber(payload.skipped)} مكرر`
       );
       setGenerateOpen(false);
-      setMonth(generateMonth);
+      setMonth(generateFrom);
       await load(false);
-    } catch (generateError) {
-      toast.error(apiErrorMessage(generateError));
+    } catch (generateErrorValue) {
+      setGenerateError(apiErrorMessage(generateErrorValue));
     } finally {
       setGenerating(false);
     }
   }
 
+  function openEditDue(row: Subscription) {
+    setEditingDue(row);
+    setEditError('');
+    setEditForm({
+      amount: String(row.amount),
+      month: row.hijri_year && row.hijri_month
+        ? hijriMonthKey(row.hijri_year, row.hijri_month)
+        : currentHijriMonthKey(),
+    });
+  }
+
+  async function submitEditDue(event: FormEvent) {
+    event.preventDefault();
+    if (!editingDue) return;
+    setEditError('');
+    setSavingEdit(true);
+    try {
+      await api.patch(`/subscriptions/${editingDue.id}`, {
+        amount: parseAmount(editForm.amount),
+        hijri: editForm.month,
+      });
+      toast.success('تم تحديث الاستحقاق');
+      setEditingDue(null);
+      await load(false);
+    } catch (editErrorValue) {
+      setEditError(apiErrorMessage(editErrorValue));
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  async function deleteDue(row: Subscription) {
+    const rowMonth = row.hijri_year && row.hijri_month
+      ? hijriMonthLabel(hijriMonthKey(row.hijri_year, row.hijri_month))
+      : monthLabel(String(row.due_month).slice(0, 7));
+    if (!window.confirm(`هل تريد حذف استحقاق ${rowMonth} للعضو «${row.full_name}»؟`)) return;
+    try {
+      await api.del(`/subscriptions/${row.id}`);
+      toast.success('تم حذف الاستحقاق');
+      await load(false);
+    } catch (deleteError) {
+      toast.error(apiErrorMessage(deleteError));
+    }
+  }
+
+  function toggleMember(id: string) {
+    setSelectedMemberIds((current) => current.includes(id)
+      ? current.filter((item) => item !== id)
+      : [...current, id]);
+  }
+
   const collectionRate = summary.total > 0 ? (summary.paid / summary.total) * 100 : 0;
+  const monthText = hijriMonthLabel(month);
 
   return (
     <div className="page-stack">
       <PageHeader
         title="الاستحقاقات الشهرية"
-        subtitle="توليد اشتراكات الأعضاء النشطين، تحصيل السداد الكلي أو الجزئي، وإصدار سندات القبض تلقائياً."
+        subtitle="استحقاق شهري هجري تلقائي، سداد كامل الشهر فقط، وإمكانية التوليد الجماعي لفترة هجرية."
         actions={
           <>
-            {capabilities?.manageMembers && (
+            {capabilities?.addSubscriptions && (
               <Button
                 variant="secondary"
                 icon={<CalendarPlus size={17} />}
-                onClick={() => { setGenerateMonth(month); setGenerateOpen(true); }}
+                onClick={openGenerate}
               >
-                توليد استحقاقات الشهر
+                توليد استحقاقات فترة
               </Button>
             )}
-            {capabilities?.manageReceipts && (
+            {capabilities?.paySubscriptions && (
               <Button
                 icon={<Banknote size={17} />}
                 onClick={() => {
@@ -227,8 +294,13 @@ export function SubscriptionsPage() {
         }
       />
 
+      <Alert tone="info" title="الاستحقاقات التلقائية">
+        يتم إنشاء استحقاق الشهر الهجري الجديد تلقائياً لجميع الأعضاء النشطين عند أول دخول للنظام أو عبر المهمة اليومية.
+        لا تحتاج إلى الضغط على زر التوليد كل شهر. زر «توليد استحقاقات فترة» مخصص للفترات السابقة أو الجماعية.
+      </Alert>
+
       <section className="stats-grid four">
-        <StatCard label="عدد الاستحقاقات" value={formatNumber(summary.count)} hint={monthLabel(month)} icon={<CalendarClock size={21} />} tone="slate" />
+        <StatCard label="عدد الاستحقاقات" value={formatNumber(summary.count)} hint={monthText} icon={<CalendarClock size={21} />} tone="slate" />
         <StatCard label="إجمالي المستحق" value={money(summary.total)} hint="قيمة الاشتراكات المولدة" icon={<Coins size={21} />} tone="blue" />
         <StatCard label="المحصل" value={money(summary.paid)} hint={`نسبة التحصيل ${Math.round(collectionRate)}%`} icon={<Wallet size={21} />} tone="emerald" />
         <StatCard label="المتبقي للتحصيل" value={money(summary.remaining)} hint="لا يدخل ضمن الرصيد النقدي" icon={<ReceiptText size={21} />} tone="amber" />
@@ -237,7 +309,7 @@ export function SubscriptionsPage() {
       <Card className="collection-card">
         <div className="collection-head">
           <div>
-            <span>تحصيل استحقاقات {monthLabel(month)}</span>
+            <span>تحصيل استحقاقات {monthText}</span>
             <strong>{Math.round(collectionRate)}%</strong>
           </div>
           <div className="collection-values">
@@ -267,7 +339,7 @@ export function SubscriptionsPage() {
             tabs={[
               { value: 'all', label: 'الكل' },
               { value: 'unpaid', label: 'غير مسدد' },
-              { value: 'partial', label: 'سداد جزئي' },
+              { value: 'partial', label: 'سداد جزئي قديم' },
               { value: 'paid', label: 'مسدد' },
             ]}
           />
@@ -280,27 +352,19 @@ export function SubscriptionsPage() {
         ) : rows.length === 0 ? (
           <EmptyState
             title="لا توجد استحقاقات لهذا الشهر"
-            description={
-              summary.count === 0
-                ? 'يمكنك توليد استحقاقات الشهر لجميع الأعضاء النشطين بضغطة واحدة.'
-                : 'لا توجد نتائج مطابقة للفلاتر المحددة.'
-            }
+            description="سيتم إنشاء استحقاق الشهر تلقائياً عند أول دخول. يمكنك أيضاً توليد فترة سابقة أو جماعية."
             icon={<CalendarPlus size={28} />}
-            action={
-              summary.count === 0 && capabilities?.manageMembers ? (
-                <Button onClick={() => { setGenerateMonth(month); setGenerateOpen(true); }} icon={<CalendarPlus size={17} />}>
-                  توليد الاستحقاقات
-                </Button>
-              ) : undefined
-            }
+            action={capabilities?.addSubscriptions ? (
+              <Button onClick={openGenerate} icon={<CalendarPlus size={17} />}>توليد استحقاقات فترة</Button>
+            ) : undefined}
           />
         ) : (
           <div className="table-wrap">
-            <table className="data-table">
+            <table className="data-table responsive-table">
               <thead>
                 <tr>
                   <th>العضو</th>
-                  <th>الشهر</th>
+                  <th>الشهر الهجري</th>
                   <th>المستحق</th>
                   <th>المسدد</th>
                   <th>المتبقي</th>
@@ -312,9 +376,12 @@ export function SubscriptionsPage() {
                 {rows.map((row) => {
                   const rowStatus = subscriptionStatus(row.status);
                   const remaining = row.remaining ?? row.amount - row.paid_amount;
+                  const rowMonth = row.hijri_year && row.hijri_month
+                    ? hijriMonthLabel(hijriMonthKey(row.hijri_year, row.hijri_month))
+                    : monthText;
                   return (
                     <tr key={row.id}>
-                      <td>
+                      <td data-label="العضو">
                         <div className="person-cell">
                           <span className="avatar avatar-xs">{(row.full_name ?? '?').charAt(0)}</span>
                           <div>
@@ -323,21 +390,31 @@ export function SubscriptionsPage() {
                           </div>
                         </div>
                       </td>
-                      <td>{monthLabel(row.due_month)}</td>
-                      <td>{money(row.amount)}</td>
-                      <td className="text-emerald">{money(row.paid_amount)}</td>
-                      <td className={remaining > 0 ? 'danger-text' : ''}>{money(remaining)}</td>
-                      <td><Badge tone={rowStatus.tone} dot>{rowStatus.label}</Badge></td>
-                      <td>
-                        {row.status === 'paid' ? (
-                          <span className="paid-check"><CheckCircle2 size={18} /> مكتمل</span>
-                        ) : capabilities?.manageReceipts ? (
-                          <Button size="sm" variant="soft" icon={<Banknote size={15} />} onClick={() => openPayment(row)}>
-                            تسجيل سداد
-                          </Button>
-                        ) : (
-                          <span className="muted">—</span>
-                        )}
+                      <td data-label="الشهر">{rowMonth}</td>
+                      <td data-label="المستحق">{money(row.amount)}</td>
+                      <td data-label="المسدد" className="text-emerald">{money(row.paid_amount)}</td>
+                      <td data-label="المتبقي" className={remaining > 0 ? 'danger-text' : ''}>{money(remaining)}</td>
+                      <td data-label="الحالة"><Badge tone={rowStatus.tone} dot>{rowStatus.label}</Badge></td>
+                      <td data-label="الإجراء">
+                        <div className="row-actions">
+                          {row.status === 'paid' ? (
+                            <span className="paid-check"><CheckCircle2 size={18} /> مكتمل</span>
+                          ) : capabilities?.paySubscriptions ? (
+                            <Button size="sm" variant="soft" icon={<Banknote size={15} />} onClick={() => openPayment(row)}>
+                              سداد كامل
+                            </Button>
+                          ) : null}
+                          {capabilities?.editSubscriptions && (
+                            <button type="button" className="icon-btn" title="تعديل الاستحقاق" onClick={() => openEditDue(row)}>
+                              <Edit3 size={16} />
+                            </button>
+                          )}
+                          {capabilities?.deleteSubscriptions && row.status !== 'paid' && (
+                            <button type="button" className="icon-btn danger-text" title="حذف الاستحقاق" onClick={() => deleteDue(row)}>
+                              <Trash2 size={16} />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -350,11 +427,11 @@ export function SubscriptionsPage() {
 
       {generateOpen && (
         <Modal
-          title="توليد استحقاقات الشهر"
-          subtitle="إنشاء استحقاق شهري لكل عضو نشط تلقائياً مع تخطي المكرر"
+          title="توليد استحقاقات هجرية"
+          subtitle="اختر شهراً واحداً أو فترة أشهر، وحدد الأعضاء المطلوبين. يتم تخطي المكرر تلقائياً."
           icon={<CalendarPlus size={20} />}
           onClose={() => setGenerateOpen(false)}
-          size="md"
+          size="lg"
           footer={
             <>
               <Button variant="ghost" onClick={() => setGenerateOpen(false)} disabled={generating}>إلغاء</Button>
@@ -365,12 +442,47 @@ export function SubscriptionsPage() {
           }
         >
           <form id="generate-form" onSubmit={generate} className="form-stack">
-            <Field label="شهر الاستحقاق" required hint="يُسجل الاستحقاق في أول يوم من الشهر المحدد">
-              <TextInput type="month" value={generateMonth} onChange={(event) => setGenerateMonth(event.target.value)} required />
-            </Field>
+            {generateError && <Alert tone="danger">{generateError}</Alert>}
+            <div className="form-grid two">
+              <Field label="من شهر (هجري)" required>
+                <HijriMonthInput value={generateFrom} onChange={setGenerateFrom} back={60} forward={12} />
+              </Field>
+              <Field label="إلى شهر (هجري)" required>
+                <HijriMonthInput value={generateTo} onChange={setGenerateTo} back={60} forward={12} />
+              </Field>
+            </div>
+            <div className="member-picker-head">
+              <strong>الأعضاء ({formatNumber(selectedMemberIds.length)} من {formatNumber(generateMembers.length)})</strong>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setSelectedMemberIds(
+                  selectedMemberIds.length === generateMembers.length ? [] : generateMembers.map((member) => member.id)
+                )}
+              >
+                {selectedMemberIds.length === generateMembers.length ? 'إلغاء تحديد الكل' : 'تحديد الكل'}
+              </button>
+            </div>
+            <div className="member-picker">
+              {generateMembers.map((member) => (
+                <label key={member.id} className="member-pick-row">
+                  <input
+                    type="checkbox"
+                    checked={selectedMemberIds.includes(member.id)}
+                    onChange={() => toggleMember(member.id)}
+                  />
+                  <span className="avatar avatar-xs">{member.full_name.charAt(0)}</span>
+                  <span>
+                    <strong>{member.full_name}</strong>
+                    <small>{member.member_no} — {money(member.monthly_fee)}</small>
+                  </span>
+                </label>
+              ))}
+              {!generateMembers.length && <p className="muted">لا يوجد أعضاء نشطون.</p>}
+            </div>
             <Alert tone="info" title="آلية التوليد">
-              سيتم إنشاء استحقاق بقيمة الاشتراك الشهري المسجل لكل عضو نشط. لن يتم إنشاء استحقاق مكرر
-              لنفس العضو في نفس الشهر، ولن تتأثر الأعضاء الموقوفة.
+              يتم إنشاء استحقاق واحد لكل عضو لكل شهر هجري في الفترة المحددة، بقيمة الاشتراك الشهري المسجل.
+              لن يتم إنشاء استحقاق مكرر، ولن تتأثر الأعضاء الموقوفة.
             </Alert>
           </form>
         </Modal>
@@ -378,8 +490,8 @@ export function SubscriptionsPage() {
 
       {paying && (
         <Modal
-          title="تسجيل سداد اشتراك"
-          subtitle={`${paying.full_name} — ${monthLabel(paying.due_month)}`}
+          title="سداد كامل استحقاق الشهر"
+          subtitle={`${paying.full_name} — ${paying.hijri_year && paying.hijri_month ? hijriMonthLabel(hijriMonthKey(paying.hijri_year, paying.hijri_month)) : monthLabel(String(paying.due_month).slice(0, 7))}`}
           icon={<Banknote size={20} />}
           onClose={() => setPaying(null)}
           size="md"
@@ -387,7 +499,7 @@ export function SubscriptionsPage() {
             <>
               <Button variant="ghost" onClick={() => setPaying(null)} disabled={savingPayment}>إلغاء</Button>
               <Button type="submit" form="payment-form" loading={savingPayment} icon={<ReceiptText size={17} />}>
-                سداد وإصدار سند قبض
+                سداد كامل وإصدار سند
               </Button>
             </>
           }
@@ -397,20 +509,9 @@ export function SubscriptionsPage() {
             <div className="payment-summary">
               <div><span>المستحق</span><strong>{money(paying.amount)}</strong></div>
               <div><span>المسدد سابقاً</span><strong>{money(paying.paid_amount)}</strong></div>
-              <div><span>المتبقي</span><strong className="danger-text">{money(paying.remaining ?? paying.amount - paying.paid_amount)}</strong></div>
+              <div><span>المطلوب سداده كاملاً</span><strong className="danger-text">{money(paying.remaining ?? paying.amount - paying.paid_amount)}</strong></div>
             </div>
             <div className="form-grid two">
-              <Field label="مبلغ السداد (ر.ي)" required hint={`الحد الأقصى: ${money(paying.remaining ?? paying.amount - paying.paid_amount)}`}>
-                <TextInput
-                  type="number"
-                  min="0.01"
-                  step="1"
-                  max={paying.remaining ?? paying.amount - paying.paid_amount}
-                  value={payForm.amount}
-                  onChange={(event) => setPayForm((current) => ({ ...current, amount: event.target.value }))}
-                  required
-                />
-              </Field>
               <Field label="طريقة الدفع" required>
                 <Select
                   value={payForm.payment_method}
@@ -420,44 +521,53 @@ export function SubscriptionsPage() {
                   <option value="bank_transfer">حوالة بنكية</option>
                 </Select>
               </Field>
-              <Field label="تاريخ السند" required>
-                <TextInput
-                  type="date"
+              <Field label="تاريخ السند (هجري)" required>
+                <HijriDateInput
                   value={payForm.receipt_date}
-                  onChange={(event) => setPayForm((current) => ({ ...current, receipt_date: event.target.value }))}
-                  required
-                />
-              </Field>
-              <Field label="ملاحظات">
-                <TextInput
-                  value={payForm.notes}
-                  onChange={(event) => setPayForm((current) => ({ ...current, notes: event.target.value }))}
-                  placeholder="ملاحظة اختيارية على السند"
+                  onChange={(value) => setPayForm((current) => ({ ...current, receipt_date: value }))}
                 />
               </Field>
             </div>
-            <div className="quick-amounts">
-              <button
-                type="button"
-                onClick={() => setPayForm((current) => ({
-                  ...current,
-                  amount: String(paying.remaining ?? paying.amount - paying.paid_amount),
-                }))}
-              >
-                سداد كامل المتبقي
-              </button>
-              <button
-                type="button"
-                onClick={() => setPayForm((current) => ({
-                  ...current,
-                  amount: String(Math.round((paying.remaining ?? paying.amount - paying.paid_amount) / 2)),
-                }))}
-              >
-                نصف المتبقي
-              </button>
+            <Field label="ملاحظات">
+              <TextInput
+                value={payForm.notes}
+                onChange={(event) => setPayForm((current) => ({ ...current, notes: event.target.value }))}
+                placeholder="ملاحظة اختيارية على السند"
+              />
+            </Field>
+            <Alert tone="warning">
+              السداد الجزئي غير مسموح. سيتم سداد كامل المتبقي دفعة واحدة وتحديث حالة الاستحقاق إلى «مسدد».
+            </Alert>
+          </form>
+        </Modal>
+      )}
+
+      {editingDue && (
+        <Modal
+          title="تعديل استحقاق شهري"
+          subtitle={`${editingDue.full_name} — ${editingDue.member_no}`}
+          icon={<Edit3 size={20} />}
+          onClose={() => setEditingDue(null)}
+          size="md"
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setEditingDue(null)} disabled={savingEdit}>إلغاء</Button>
+              <Button type="submit" form="edit-due-form" loading={savingEdit}>حفظ التعديلات</Button>
+            </>
+          }
+        >
+          <form id="edit-due-form" onSubmit={submitEditDue} className="form-stack">
+            {editError && <Alert tone="danger">{editError}</Alert>}
+            <div className="form-grid two">
+              <Field label="قيمة الاستحقاق (ر.ي)" required hint="أرقام صحيحة فقط">
+                <AmountInput value={editForm.amount} onChange={(value) => setEditForm((current) => ({ ...current, amount: value }))} required />
+              </Field>
+              <Field label="الشهر الهجري" required>
+                <HijriMonthInput value={editForm.month} onChange={(value) => setEditForm((current) => ({ ...current, month: value }))} back={60} forward={12} />
+              </Field>
             </div>
             <Alert tone="info">
-              سيتم تحديث حالة الاستحقاق تلقائياً وإنشاء سند قبض رسمي مرتبط بهذا السداد.
+              لا يمكن جعل القيمة أقل من المبلغ المسدد. إذا كان الاستحقاق مسدداً بالكامل فسيتم إبقاء حالته «مسدد».
             </Alert>
           </form>
         </Modal>

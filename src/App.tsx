@@ -41,6 +41,34 @@ function GoHomeButton() {
   return <Button onClick={() => navigate('/')}>العودة للوحة التحكم</Button>;
 }
 
+function HomeRoute() {
+  const { user, capabilities } = useAuth();
+  if (!user || !capabilities) return null;
+  if (user.role === 'member' || capabilities.viewDashboard) return <DashboardPage />;
+  const firstAllowed = [
+    capabilities.viewMembers && '/members',
+    capabilities.viewSubscriptions && '/subscriptions',
+    capabilities.viewReceipts && '/receipts',
+    capabilities.viewExpenses && '/expenses',
+    capabilities.viewReports && '/reports',
+    capabilities.manageUsers && '/users',
+    capabilities.manageSettings && '/settings',
+    capabilities.viewAudit && '/audit',
+  ].find(Boolean);
+  if (firstAllowed) return <Navigate to={firstAllowed} replace />;
+  return (
+    <div className="page-stack">
+      <div className="card card-pad">
+        <EmptyState
+          title="لا توجد صلاحيات مفعّلة"
+          description="حسابك نشط لكن لم تُمنح أي صلاحية بعد. راجع مدير النظام لتحديد الصلاحيات المناسبة."
+          icon={<ShieldAlert size={30} />}
+        />
+      </div>
+    </div>
+  );
+}
+
 function Guard({
   children,
   allow,
@@ -81,11 +109,11 @@ export default function App() {
           </RequireAuth>
         }
       >
-        <Route index element={<DashboardPage />} />
+        <Route index element={<HomeRoute />} />
         <Route
           path="members"
           element={
-            <Guard allow={(_capabilities, role) => role !== 'member'}>
+            <Guard allow={(capabilities) => capabilities.viewMembers}>
               <MembersPage />
             </Guard>
           }
@@ -93,7 +121,7 @@ export default function App() {
         <Route
           path="subscriptions"
           element={
-            <Guard allow={(_capabilities, role) => role !== 'member'}>
+            <Guard allow={(capabilities) => capabilities.viewSubscriptions}>
               <SubscriptionsPage />
             </Guard>
           }
@@ -101,7 +129,7 @@ export default function App() {
         <Route
           path="receipts"
           element={
-            <Guard allow={(capabilities, role) => capabilities.manageReceipts || role === 'board_member'}>
+            <Guard allow={(capabilities) => capabilities.viewReceipts}>
               <ReceiptsPage />
             </Guard>
           }
@@ -109,7 +137,7 @@ export default function App() {
         <Route
           path="expenses"
           element={
-            <Guard allow={(_capabilities, role) => role !== 'member'}>
+            <Guard allow={(capabilities) => capabilities.viewExpenses}>
               <ExpensesPage />
             </Guard>
           }
@@ -125,7 +153,7 @@ export default function App() {
         <Route
           path="users"
           element={
-            <Guard allow={(capabilities) => capabilities.admin}>
+            <Guard allow={(capabilities) => capabilities.manageUsers}>
               <UsersPage />
             </Guard>
           }
@@ -133,7 +161,7 @@ export default function App() {
         <Route
           path="settings"
           element={
-            <Guard allow={(capabilities) => capabilities.admin}>
+            <Guard allow={(capabilities) => capabilities.manageSettings}>
               <SettingsPage />
             </Guard>
           }

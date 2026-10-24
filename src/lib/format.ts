@@ -1,14 +1,23 @@
+import {
+  formatHijriDate,
+  formatHijriDateTime,
+  hijriMonthLabel,
+  hijriMonthKeyFromDate,
+  hijriMonthOptions,
+  currentHijriMonthKey,
+} from './hijri';
+
 export const CURRENCY_SHORT = 'ر.ي';
 export const CURRENCY_NAME = 'ريال يمني';
 
 const numberFormatter = new Intl.NumberFormat('en-US', {
-  maximumFractionDigits: 2,
+  maximumFractionDigits: 0,
   minimumFractionDigits: 0,
 });
 
 export function formatNumber(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return '0';
-  return numberFormatter.format(Number(value));
+  return numberFormatter.format(Math.trunc(Number(value)));
 }
 
 export function money(value: number | null | undefined, withCurrency = true): string {
@@ -16,29 +25,26 @@ export function money(value: number | null | undefined, withCurrency = true): st
   return withCurrency ? `${text} ${CURRENCY_SHORT}` : text;
 }
 
-const ARABIC_MONTHS = [
-  'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
-  'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر',
-];
-
+/** All user-facing dates are Hijri. */
 export function formatDate(value: string | null | undefined): string {
-  if (!value) return '—';
-  const [year, month, day] = String(value).slice(0, 10).split('-');
-  if (!year || !month || !day) return String(value);
-  return `${Number(day)} ${ARABIC_MONTHS[Number(month) - 1] ?? month} ${year}`;
+  return formatHijriDate(value);
 }
 
 export function formatDateTime(value: string | null | undefined): string {
-  if (!value) return '—';
-  const datePart = formatDate(value);
-  const time = String(value).slice(11, 16);
-  return time ? `${datePart} — ${time}` : datePart;
+  return formatHijriDateTime(value);
 }
 
+export function formatGregorianDate(value: string | null | undefined): string {
+  if (!value) return '—';
+  const [year, month, day] = String(value).slice(0, 10).split('-');
+  if (!year || !month || !day) return String(value);
+  return `${Number(day)}/${Number(month)}/${year}`;
+}
+
+/** Accepts a Gregorian date/month (from the database) and returns its Hijri label. */
 export function monthLabel(month: string | null | undefined): string {
   if (!month) return '—';
-  const [year, m] = String(month).slice(0, 7).split('-');
-  return `${ARABIC_MONTHS[Number(m) - 1] ?? m} ${year}`;
+  return hijriMonthLabel(hijriMonthKeyFromDate(month));
 }
 
 export function todayISO(): string {
@@ -47,19 +53,19 @@ export function todayISO(): string {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
+export function todayHijriMonth(): string {
+  return currentHijriMonthKey();
+}
+
 export function monthInput(offset = 0): string {
   const now = new Date();
   const date = new Date(now.getFullYear(), now.getMonth() + offset, 1);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 }
 
+/** Hijri month options (values are 1447-01 style keys). */
 export function monthOptions(back = 15, forward = 3): Array<{ value: string; label: string }> {
-  const options: Array<{ value: string; label: string }> = [];
-  for (let offset = forward; offset >= -back; offset -= 1) {
-    const value = monthInput(offset);
-    options.push({ value, label: monthLabel(value) });
-  }
-  return options;
+  return hijriMonthOptions(back, forward);
 }
 
 export function refReceipt(receiptNo: number): string {
@@ -71,6 +77,8 @@ export function refExpense(requestNo: number): string {
 
 export const ROLE_LABELS: Record<string, string> = {
   admin: 'مدير النظام',
+  fund_manager: 'مدير الصندوق',
+  secretary_general: 'الأمين العام',
   accountant: 'محاسب',
   treasurer: 'أمين الصندوق',
   board_member: 'عضو مجلس الإدارة',
@@ -100,14 +108,14 @@ export type Tone = 'success' | 'warning' | 'danger' | 'info' | 'neutral' | 'gold
 
 export function subscriptionStatus(status: string): { label: string; tone: Tone } {
   if (status === 'paid') return { label: 'مسدد', tone: 'success' };
-  if (status === 'partial') return { label: 'سداد جزئي', tone: 'warning' };
+  if (status === 'partial') return { label: 'سداد جزئي (قديم)', tone: 'warning' };
   return { label: 'غير مسدد', tone: 'danger' };
 }
 
 export function expenseStatus(status: string): { label: string; tone: Tone } {
   switch (status) {
     case 'approved':
-      return { label: 'معتمد بانتظار الصرف', tone: 'info' };
+      return { label: 'معتمد نهائياً — بانتظار الصرف', tone: 'info' };
     case 'paid':
       return { label: 'تم الصرف', tone: 'success' };
     case 'rejected':

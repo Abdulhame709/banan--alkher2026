@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
+  AlertTriangle,
+  Award,
   BarChart3,
   CalendarClock,
   Download,
@@ -10,6 +12,7 @@ import {
   RefreshCw,
   TrendingDown,
   TrendingUp,
+  UserRound,
   Wallet,
 } from 'lucide-react';
 import { api, apiErrorMessage, downloadCsv } from '../lib/api';
@@ -34,13 +37,15 @@ import {
   EmptyState,
   LoadingState,
   PageHeader,
+  Select,
   StatCard,
   Tabs,
 } from '../components/ui';
+import { HijriDateInput } from '../components/HijriInputs';
 import { ReportPrint } from '../components/PrintSheet';
-import type { CashLedger } from '../types';
+import type { CashLedger, Member } from '../types';
 
-type Tab = 'cash' | 'arrears' | 'donations' | 'disbursements';
+type Tab = 'cash' | 'arrears' | 'donations' | 'disbursements' | 'member';
 
 interface ReportsSummary {
   from: string;
@@ -55,7 +60,36 @@ interface ReportsSummary {
   };
   arrears: { total_arrears: number; open_months: number; total_accrued: number; total_collected: number };
   period: { receipts: number; paid_expenses: number; net: number };
-  counts: { receipts_count: number; expenses_count: number; active_members: number };
+  counts: { receipts_count: number; expenses_count: number; active_members: number; total_members?: number };
+  trend?: Array<{ month: string; receipts: number; expenses: number }>;
+  income_breakdown?: Array<{ receipt_type: string; label: string; count: number; total: number }>;
+  expense_breakdown?: Array<{ category: string; label: string; count: number; total: number }>;
+  top_donors?: Array<{ donor_name: string; count: number; total: number }>;
+  aging?: { current: number; days_1_90: number; days_91_180: number; over_180: number };
+  collection_rate?: number;
+  members_with_arrears?: number;
+}
+
+interface MemberMovement {
+  id: string;
+  date: string;
+  kind: 'due' | 'payment';
+  reference: string;
+  description: string;
+  debit: number;
+  credit: number;
+  balance: number;
+  status: string;
+}
+
+interface MemberStatement {
+  member: Member;
+  from: string;
+  to: string;
+  opening_balance: number;
+  movements: MemberMovement[];
+  totals: { dues: number; paid: number; closing_balance: number; arrears: number; arrears_months: number };
+  arrears: Array<{ id: string; label: string; remaining: number; due_month: string }>;
 }
 
 interface ArrearsRow {
@@ -108,7 +142,7 @@ export function ReportsPage() {
   const realtimeVersion = useRealtimeVersion();
   const [searchParams, setSearchParams] = useSearchParams();
   const initialTab = (searchParams.get('tab') as Tab) || 'cash';
-  const [tab, setTab] = useState<Tab>(['cash', 'arrears', 'donations', 'disbursements'].includes(initialTab) ? initialTab : 'cash');
+  const [tab, setTab] = useState<Tab>(['cash', 'arrears', 'donations', 'disbursements', 'member'].includes(initialTab) ? initialTab : 'cash');
   const [from, setFrom] = useState(firstOfYear());
   const [to, setTo] = useState(todayISO());
   const [summary, setSummary] = useState<ReportsSummary | null>(null);
@@ -120,13 +154,22 @@ export function ReportsPage() {
   const [error, setError] = useState('');
   const [printing, setPrinting] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [selectedMemberId, setSelectedMemberId] = useState('');
+  const [memberStatement, setMemberStatement] = useState<MemberStatement | null>(null);
 
   useEffect(() => {
     if (searchParams.get('tab')) {
       const requested = searchParams.get('tab') as Tab;
-      if (['cash', 'arrears', 'donations', 'disbursements'].includes(requested)) setTab(requested);
+      if (['cash', 'arrears', 'donations', 'disbursements', 'member'].includes(requested)) setTab(requested);
       setSearchParams({}, { replace: true });
     }
+    api.get<{ members: Member[] }>('/members?status=active')
+      .then((payload) => {
+        setMembers(payload.members);
+        if (payload.members.length && !selectedMemberId) setSelectedMemberId(payload.members[0].id);
+      })
+      .catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -145,13 +188,18 @@ export function ReportsPage() {
               ? api.get<typeof donations>(`/reports/donations?${range}`)
               : tab === 'disbursements'
                 ? api.get<typeof disbursements>(`/reports/disbursements?${range}`)
-                : api.get<CashLedger>(`/reports/cash-ledger?${range}`);
+                : tab === 'member'
+                  ? (selectedMemberId
+                    ? api.get<MemberStatement>(`/reports/member-movements?member_id=${selectedMemberId}&${range}`)
+                    : Promise.resolve(null))
+                  : api.get<CashLedger>(`/reports/cash-ledger?${range}`);
         const [summaryPayload, payload] = await Promise.all([summaryPromise, tabPromise]);
         if (!active) return;
         setSummary(summaryPayload);
         if (tab === 'arrears') setArrears(payload as typeof arrears);
         else if (tab === 'donations') setDonations(payload as typeof donations);
         else if (tab === 'disbursements') setDisbursements(payload as typeof disbursements);
+        else if (tab === 'member') setMemberStatement(payload as MemberStatement | null);
         else setCash(payload as CashLedger);
       } catch (loadError) {
         if (active) setError(apiErrorMessage(loadError));
@@ -163,13 +211,14 @@ export function ReportsPage() {
     return () => {
       active = false;
     };
-  }, [tab, from, to, refreshKey, realtimeVersion]);
+  }, [tab, from, to, refreshKey, realtimeVersion, selectedMemberId]);
 
   const rangeLabel = `${formatDate(from)} — ${formatDate(to)}`;
 
   async function exportReport(type: string) {
     try {
-      await downloadCsv(`/reports/export?type=${type}&from=${from}&to=${to}`, `تقرير-${type}.csv`);
+      const memberParam = type === 'member' && selectedMemberId ? `&member_id=${selectedMemberId}` : '';
+      await downloadCsv(`/reports/export?type=${type}&from=${from}&to=${to}${memberParam}`, `تقرير-${type}.csv`);
       toast.success('تم تصدير التقرير بصيغة CSV متوافقة مع Excel');
     } catch (exportError) {
       toast.error(apiErrorMessage(exportError));
@@ -207,8 +256,17 @@ export function ReportsPage() {
         { label: 'إجمالي المصروف', value: money(disbursements.totals.total) },
       ];
     }
+    if (tab === 'member' && memberStatement) {
+      return [
+        { label: 'العضو', value: memberStatement.member.full_name },
+        { label: 'رصيد افتتاحي', value: money(memberStatement.opening_balance) },
+        { label: 'استحقاقات الفترة', value: money(memberStatement.totals.dues) },
+        { label: 'المسدد', value: money(memberStatement.totals.paid) },
+        { label: 'إجمالي المتأخرات', value: money(memberStatement.totals.arrears) },
+      ];
+    }
     return [];
-  }, [tab, cash, arrears, donations, disbursements]);
+  }, [tab, cash, arrears, donations, disbursements, memberStatement]);
 
   return (
     <div className="page-stack">
@@ -235,6 +293,99 @@ export function ReportsPage() {
         </section>
       )}
 
+      {summary && (
+        <section className="erp-overview">
+          <div className="erp-kpi-row">
+            <div className="erp-kpi"><span>نسبة التحصيل</span><strong>{formatNumber(summary.collection_rate ?? 0)}%</strong><small>من إجمالي الاستحقاقات</small></div>
+            <div className="erp-kpi"><span>الصافي المتاح</span><strong>{money(summary.position.net_available)}</strong><small>بعد خصم الالتزامات المعتمدة</small></div>
+            <div className="erp-kpi"><span>التزامات معتمدة</span><strong>{money(summary.position.committed_pending)}</strong><small>طلبات معتمدة بانتظار الصرف</small></div>
+            <div className="erp-kpi"><span>أعضاء متأخرون</span><strong>{formatNumber(summary.members_with_arrears ?? 0)}</strong><small>من أصل {formatNumber(summary.counts.active_members)} عضو نشط</small></div>
+          </div>
+
+          <div className="erp-grid">
+            <Card className="erp-panel erp-panel-wide">
+              <div className="erp-panel-head">
+                <div><h3><BarChart3 size={17} /> حركة آخر 12 شهراً</h3><p>المقبوضات مقابل المصروفات المدفوعة</p></div>
+                <div className="erp-legend"><span><i className="dot-emerald" /> وارد</span><span><i className="dot-gold" /> صادر</span></div>
+              </div>
+              <div className="trend-chart">
+                {(summary.trend ?? []).map((point) => {
+                  const max = Math.max(1, ...(summary.trend ?? []).map((row) => Math.max(row.receipts, row.expenses)));
+                  return (
+                    <div key={point.month} className="trend-col" title={`${monthLabel(point.month)} — وارد ${money(point.receipts)} / صادر ${money(point.expenses)}`}>
+                      <div className="trend-bars">
+                        <span className="trend-bar in" style={{ height: `${Math.max(3, (point.receipts / max) * 100)}%` }} />
+                        <span className="trend-bar out" style={{ height: `${Math.max(3, (point.expenses / max) * 100)}%` }} />
+                      </div>
+                      <small>{monthLabel(point.month).split(' ')[0]}</small>
+                    </div>
+                  );
+                })}
+                {!(summary.trend ?? []).length && <p className="muted">لا توجد بيانات كافية للرسم.</p>}
+              </div>
+            </Card>
+
+            <Card className="erp-panel">
+              <div className="erp-panel-head"><div><h3><TrendingUp size={17} /> مصادر الإيراد</h3><p>حسب نوع السند</p></div></div>
+              <div className="breakdown-list">
+                {(summary.income_breakdown ?? []).map((row) => {
+                  const max = Math.max(1, ...(summary.income_breakdown ?? []).map((item) => item.total));
+                  return (
+                    <div key={row.receipt_type} className="breakdown-row">
+                      <div><span>{row.label}</span><strong>{money(row.total)}</strong></div>
+                      <div className="breakdown-bar"><i className="emerald" style={{ width: `${(row.total / max) * 100}%` }} /></div>
+                      <small>{formatNumber(row.count)} سند</small>
+                    </div>
+                  );
+                })}
+                {!(summary.income_breakdown ?? []).length && <p className="muted">لا توجد إيرادات في الفترة.</p>}
+              </div>
+            </Card>
+
+            <Card className="erp-panel">
+              <div className="erp-panel-head"><div><h3><TrendingDown size={17} /> توزيع المصروفات</h3><p>حسب فئة الصرف</p></div></div>
+              <div className="breakdown-list">
+                {(summary.expense_breakdown ?? []).map((row) => {
+                  const max = Math.max(1, ...(summary.expense_breakdown ?? []).map((item) => item.total));
+                  return (
+                    <div key={row.category} className="breakdown-row">
+                      <div><span>{row.label}</span><strong>{money(row.total)}</strong></div>
+                      <div className="breakdown-bar"><i className="gold" style={{ width: `${(row.total / max) * 100}%` }} /></div>
+                      <small>{formatNumber(row.count)} عملية</small>
+                    </div>
+                  );
+                })}
+                {!(summary.expense_breakdown ?? []).length && <p className="muted">لا توجد مصروفات في الفترة.</p>}
+              </div>
+            </Card>
+
+            <Card className="erp-panel">
+              <div className="erp-panel-head"><div><h3><AlertTriangle size={17} /> أعمار المتأخرات</h3><p>حسب مدة التأخر</p></div></div>
+              <div className="aging-grid">
+                <div><span>أقل من 30 يوماً</span><strong>{money(summary.aging?.current ?? 0)}</strong></div>
+                <div><span>31 – 90 يوماً</span><strong>{money(summary.aging?.days_1_90 ?? 0)}</strong></div>
+                <div><span>91 – 180 يوماً</span><strong>{money(summary.aging?.days_91_180 ?? 0)}</strong></div>
+                <div className="danger"><span>أكثر من 180 يوماً</span><strong>{money(summary.aging?.over_180 ?? 0)}</strong></div>
+              </div>
+            </Card>
+
+            <Card className="erp-panel">
+              <div className="erp-panel-head"><div><h3><Award size={17} /> أكبر المتبرعين</h3><p>خلال الفترة المحددة</p></div></div>
+              <div className="top-donors">
+                {(summary.top_donors ?? []).map((row, index) => (
+                  <div key={`${row.donor_name}-${index}`} className="top-donor-row">
+                    <span className="rank">{index + 1}</span>
+                    <div><strong>{row.donor_name}</strong><small>{formatNumber(row.count)} تبرع</small></div>
+                    <b>{money(row.total)}</b>
+                  </div>
+                ))}
+                {!(summary.top_donors ?? []).length && <p className="muted">لا توجد تبرعات مسجلة في الفترة.</p>}
+              </div>
+            </Card>
+          </div>
+        </section>
+      )}
+
       <Card className="reports-filter">
         <div className="reports-filter-row">
           <Tabs
@@ -245,12 +396,21 @@ export function ReportsPage() {
               { value: 'arrears', label: 'تقرير المتأخرات' },
               { value: 'donations', label: 'تقرير التبرعات' },
               { value: 'disbursements', label: 'تقرير المصروفات' },
+              { value: 'member', label: 'كشف حركة عضو' },
             ]}
           />
+          {tab === 'member' && (
+            <Select value={selectedMemberId} onChange={(event) => setSelectedMemberId(event.target.value)}>
+              <option value="">اختر العضو…</option>
+              {members.map((member) => (
+                <option key={member.id} value={member.id}>{member.member_no} — {member.full_name}</option>
+              ))}
+            </Select>
+          )}
           {tab !== 'arrears' && (
             <div className="date-range">
-              <label>من <input type="date" className="input" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
-              <label>إلى <input type="date" className="input" value={to} onChange={(event) => setTo(event.target.value)} /></label>
+              <label>من (هجري) <HijriDateInput value={from} onChange={setFrom} /></label>
+              <label>إلى (هجري) <HijriDateInput value={to} onChange={setTo} /></label>
             </div>
           )}
         </div>
@@ -501,6 +661,66 @@ export function ReportsPage() {
               )}
             </Card>
           )}
+
+          {tab === 'member' && (
+            !selectedMemberId ? (
+              <Card><EmptyState title="اختر عضواً" description="اختر العضو لعرض كشف حركته التفصيلي والمتأخرات." icon={<UserRound size={28} />} /></Card>
+            ) : !memberStatement ? (
+              <Card><LoadingState label="جارٍ تحميل كشف العضو…" /></Card>
+            ) : (
+              <Card padding={false} className="table-card member-statement-card">
+                <div className="report-head">
+                  <div>
+                    <h3>كشف حركة العضو: {memberStatement.member.full_name}</h3>
+                    <p>رقم العضوية {memberStatement.member.member_no} — الفترة {formatDate(memberStatement.from)} إلى {formatDate(memberStatement.to)}</p>
+                  </div>
+                  <div className="report-head-metrics">
+                    <div><span>رصيد افتتاحي</span><strong>{money(memberStatement.opening_balance)}</strong></div>
+                    <div><span>استحقاقات الفترة</span><strong>{money(memberStatement.totals.dues)}</strong></div>
+                    <div><span>المسدد</span><strong className="text-emerald">{money(memberStatement.totals.paid)}</strong></div>
+                    <div><span>إجمالي المتأخرات</span><strong className="danger-text">{money(memberStatement.totals.arrears)}</strong></div>
+                  </div>
+                </div>
+
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr><th>التاريخ</th><th>المستند</th><th>البيان</th><th>مدين (استحقاق)</th><th>دائن (سداد)</th><th>الرصيد</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr className="opening-row">
+                        <td>{formatDate(memberStatement.from)}</td><td>—</td><td>رصيد افتتاحي مرحّل</td><td>—</td><td>—</td><td className="amount-cell">{money(memberStatement.opening_balance)}</td>
+                      </tr>
+                      {memberStatement.movements.map((movement) => (
+                        <tr key={movement.id}>
+                          <td className="muted">{formatDate(movement.date)}</td>
+                          <td className="mono">{movement.reference || '—'}</td>
+                          <td>{movement.description}</td>
+                          <td className="text-gold">{movement.debit ? money(movement.debit) : '—'}</td>
+                          <td className="text-emerald">{movement.credit ? money(movement.credit) : '—'}</td>
+                          <td className="amount-cell">{money(movement.balance)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr><td colSpan={3}>الإجمالي</td><td>{money(memberStatement.totals.dues)}</td><td>{money(memberStatement.totals.paid)}</td><td>{money(memberStatement.totals.closing_balance)}</td></tr>
+                    </tfoot>
+                  </table>
+                </div>
+
+                {memberStatement.arrears.length > 0 && (
+                  <div className="member-arrears">
+                    <h4><AlertTriangle size={16} /> تفصيل المتأخرات ({formatNumber(memberStatement.totals.arrears_months)} شهر)</h4>
+                    <div className="arrears-chips">
+                      {memberStatement.arrears.map((row) => (
+                        <span key={row.id} className="arrears-chip"><b>{row.label}</b><em>{money(row.remaining)}</em></span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </Card>
+            )
+          )}
         </>
       )}
 
@@ -601,6 +821,48 @@ export function ReportsPage() {
               <tr><th colSpan={4}>الإجمالي</th><th>{money(disbursements.totals.total, false)}</th><th /></tr>
             </tfoot>
           </table>
+        </ReportPrint>
+      )}
+
+      {printing && tab === 'member' && memberStatement && (
+        <ReportPrint
+          title={`كشف حركة العضو: ${memberStatement.member.full_name}`}
+          subtitle={`رقم العضوية ${memberStatement.member.member_no} — الفترة ${rangeLabel}`}
+          metrics={printMetrics}
+          onClose={() => setPrinting(false)}
+        >
+          <table className="print-table compact">
+            <thead>
+              <tr><th>التاريخ</th><th>المستند</th><th>البيان</th><th>مدين</th><th>دائن</th><th>الرصيد</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>{formatDate(memberStatement.from)}</td><td>—</td><td>رصيد افتتاحي</td><td>—</td><td>—</td><td>{money(memberStatement.opening_balance, false)}</td></tr>
+              {memberStatement.movements.map((movement) => (
+                <tr key={movement.id}>
+                  <td>{formatDate(movement.date)}</td><td>{movement.reference || '—'}</td><td>{movement.description}</td>
+                  <td>{movement.debit ? money(movement.debit, false) : '—'}</td>
+                  <td>{movement.credit ? money(movement.credit, false) : '—'}</td>
+                  <td>{money(movement.balance, false)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr><th colSpan={3}>الإجمالي</th><th>{money(memberStatement.totals.dues, false)}</th><th>{money(memberStatement.totals.paid, false)}</th><th>{money(memberStatement.totals.closing_balance, false)}</th></tr>
+            </tfoot>
+          </table>
+          {memberStatement.arrears.length > 0 && (
+            <div className="print-arrears">
+              <h4>تفصيل المتأخرات</h4>
+              <table className="print-table compact">
+                <thead><tr><th>الشهر</th><th>المتبقي</th></tr></thead>
+                <tbody>
+                  {memberStatement.arrears.map((row) => (
+                    <tr key={row.id}><td>{row.label}</td><td>{money(row.remaining, false)}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </ReportPrint>
       )}
     </div>

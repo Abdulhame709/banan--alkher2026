@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
+  Check,
   KeyRound,
-  Mail,
   Pencil,
+  ShieldAlert,
   ShieldCheck,
   UserCog,
   UserPlus,
   Users,
+  X,
 } from 'lucide-react';
 import { api, apiErrorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -37,12 +39,82 @@ interface AdminUser extends User {
 }
 
 const ROLE_DESCRIPTIONS: Record<Role, string> = {
-  admin: 'صلاحية كاملة على النظام والإعدادات والمستخدمين والاعتمادات والصرف.',
-  accountant: 'إدارة الأعضاء والاستحقاقات وسندات القبض والتقارير المالية.',
-  treasurer: 'التحصيل، اعتماد طلبات الصرف، وتنفيذ الصرف عند كفاية الرصيد.',
-  board_member: 'مراجعة مالية واعتماد طلبات الصرف والاطلاع على سجل التدقيق.',
-  member: 'بوابة عضو للاطلاع على الاشتراكات والمدفوعات الخاصة به فقط.',
+  admin: 'مدير النظام: صلاحية كاملة على جميع أجزاء النظام وإدارة المستخدمين والإعدادات.',
+  fund_manager: 'مدير الصندوق: يشرف على أعمال الصندوق ويعتمد طلبات الصرف في المرحلة الثانية.',
+  secretary_general: 'الأمين العام: يعتمد طلبات الصرف في المرحلة الأولى ويتابع التقارير والبيانات.',
+  accountant: 'المحاسب: إدخال وتعديل البيانات المالية وإصدار السندات وطلبات الصرف.',
+  treasurer: 'أمين الصندوق: تحصيل الأموال وتسجيل السندات وصرف المبالغ المعتمدة.',
+  board_member: 'عضو مجلس الإدارة: اطلاع وقراءة التقارير والبيانات دون تعديل.',
+  member: 'حساب عضو: بوابة شخصية لعرض الاشتراكات والسندات الخاصة به.',
 };
+
+const PERMISSION_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
+  {
+    title: 'لوحة التحكم',
+    items: [['dashboard.view', 'عرض لوحة التحكم']],
+  },
+  {
+    title: 'الأعضاء',
+    items: [
+      ['members.view', 'عرض الأعضاء'],
+      ['members.add', 'إضافة عضو'],
+      ['members.edit', 'تعديل عضو'],
+      ['members.delete', 'حذف عضو'],
+      ['members.import', 'استيراد من Excel'],
+      ['members.export', 'تصدير إلى Excel'],
+    ],
+  },
+  {
+    title: 'الاستحقاقات الشهرية',
+    items: [
+      ['subscriptions.view', 'عرض الاستحقاقات'],
+      ['subscriptions.add', 'توليد استحقاقات'],
+      ['subscriptions.edit', 'تعديل استحقاق'],
+      ['subscriptions.delete', 'حذف استحقاق'],
+      ['subscriptions.pay', 'تحصيل سداد'],
+    ],
+  },
+  {
+    title: 'سندات القبض والتبرعات',
+    items: [
+      ['receipts.view', 'عرض السندات'],
+      ['receipts.add', 'إضافة سند'],
+      ['receipts.edit', 'تعديل سند'],
+      ['receipts.delete', 'حذف سند'],
+      ['receipts.print', 'طباعة سند'],
+    ],
+  },
+  {
+    title: 'طلبات الصرف',
+    items: [
+      ['expenses.view', 'عرض طلبات الصرف'],
+      ['expenses.add', 'إنشاء طلب صرف'],
+      ['expenses.edit', 'تعديل طلب صرف'],
+      ['expenses.delete', 'حذف طلب صرف'],
+      ['expenses.approve', 'اعتماد طلبات الصرف'],
+      ['expenses.pay', 'صرف الأموال'],
+      ['expenses.print', 'طباعة سند صرف'],
+    ],
+  },
+  {
+    title: 'التقارير والتدقيق',
+    items: [
+      ['reports.view', 'عرض التقارير'],
+      ['reports.export', 'تصدير التقارير'],
+      ['reports.print', 'طباعة التقارير'],
+      ['audit.view', 'عرض سجل التدقيق'],
+    ],
+  },
+  {
+    title: 'الإدارة والنظام',
+    items: [
+      ['users.manage', 'إدارة المستخدمين'],
+      ['settings.manage', 'إدارة الإعدادات'],
+      ['backups.manage', 'إدارة النسخ الاحتياطية'],
+      ['backups.restore', 'استعادة نسخة احتياطية'],
+    ],
+  },
+];
 
 export function UsersPage() {
   const { user: currentUser, refresh } = useAuth();
@@ -71,6 +143,14 @@ export function UsersPage() {
   const [newPassword, setNewPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [savingPassword, setSavingPassword] = useState(false);
+  const [permissionKeys, setPermissionKeys] = useState<string[]>([]);
+  const [rolePermissions, setRolePermissions] = useState<Record<string, string[]>>({});
+  const [permissions, setPermissions] = useState<Record<string, boolean>>({});
+  const [approvalTarget, setApprovalTarget] = useState<AdminUser | null>(null);
+  const [approvalRole, setApprovalRole] = useState<Role>('member');
+  const [approvalMemberId, setApprovalMemberId] = useState('');
+  const [approvalSaving, setApprovalSaving] = useState(false);
+  const [approvalError, setApprovalError] = useState('');
 
   async function load() {
     setLoading(true);
@@ -80,10 +160,14 @@ export function UsersPage() {
         users: AdminUser[];
         members: Member[];
         roles: Array<{ value: Role; label: string }>;
+        permission_keys: string[];
+        role_permissions: Record<string, string[]>;
       }>('/users');
       setUsers(payload.users);
       setMembers(payload.members);
       setRoles(payload.roles);
+      setPermissionKeys(payload.permission_keys ?? []);
+      setRolePermissions(payload.role_permissions ?? {});
     } catch (loadError) {
       setError(apiErrorMessage(loadError));
     } finally {
@@ -103,6 +187,19 @@ export function UsersPage() {
     );
   }, [users, search]);
 
+  function defaultPermissionsFor(role: Role) {
+    const defaults = role === 'admin'
+      ? permissionKeys
+      : (rolePermissions[role] ?? []);
+    const result: Record<string, boolean> = {};
+    for (const key of permissionKeys) result[key] = defaults.includes(key);
+    return result;
+  }
+
+  function togglePermission(key: string) {
+    setPermissions((current) => ({ ...current, [key]: !current[key] }));
+  }
+
   function openCreate() {
     setEditing(null);
     setForm({
@@ -114,6 +211,7 @@ export function UsersPage() {
       linked_member_id: '',
       active: true,
     });
+    setPermissions(defaultPermissionsFor('member'));
     setFormError('');
     setFormOpen(true);
   }
@@ -129,8 +227,47 @@ export function UsersPage() {
       linked_member_id: target.linked_member_id ?? '',
       active: Boolean(target.active),
     });
+    setPermissions({ ...defaultPermissionsFor(target.role), ...(target.permissions ?? {}) });
     setFormError('');
     setFormOpen(true);
+  }
+
+  function changeRole(role: Role) {
+    setForm((current) => ({ ...current, role }));
+    setPermissions(defaultPermissionsFor(role));
+  }
+
+  async function approveUser(event: FormEvent) {
+    event.preventDefault();
+    if (!approvalTarget) return;
+    setApprovalError('');
+    setApprovalSaving(true);
+    try {
+      await api.post(`/users/${approvalTarget.id}/approve`, {
+        role: approvalRole,
+        linked_member_id: approvalMemberId || null,
+        permissions: defaultPermissionsFor(approvalRole),
+      });
+      toast.success(`تمت الموافقة على ${approvalTarget.full_name}`);
+      setApprovalTarget(null);
+      await load();
+    } catch (approveError) {
+      setApprovalError(apiErrorMessage(approveError));
+    } finally {
+      setApprovalSaving(false);
+    }
+  }
+
+  async function rejectUser(target: AdminUser) {
+    const reason = window.prompt(`سبب رفض طلب تسجيل «${target.full_name}» (اختياري):`, '');
+    if (reason === null) return;
+    try {
+      await api.post(`/users/${target.id}/reject`, { reason: reason.trim() || null });
+      toast.success('تم رفض طلب التسجيل');
+      await load();
+    } catch (rejectError) {
+      toast.error(apiErrorMessage(rejectError));
+    }
   }
 
   async function submit(event: FormEvent) {
@@ -145,6 +282,7 @@ export function UsersPage() {
           role: form.role,
           active: form.active,
           linked_member_id: form.linked_member_id || null,
+          permissions,
         });
         toast.success('تم تحديث بيانات المستخدم');
         if (editing.id === currentUser?.id) await refresh();
@@ -156,6 +294,7 @@ export function UsersPage() {
           phone: form.phone.trim() || null,
           role: form.role,
           linked_member_id: form.linked_member_id || null,
+          permissions,
         });
         toast.success('تم إنشاء حساب المستخدم بنجاح');
       }
@@ -189,11 +328,12 @@ export function UsersPage() {
     }
   }
 
+  const pendingUsers = users.filter((row) => row.approval_status === 'pending');
   const stats = {
     total: users.length,
-    active: users.filter((row) => row.active).length,
-    admins: users.filter((row) => row.role === 'admin').length,
-    members: users.filter((row) => row.role === 'member').length,
+    active: users.filter((row) => row.active && row.approval_status === 'approved').length,
+    admins: users.filter((row) => row.role === 'admin' && row.approval_status === 'approved').length,
+    pending: pendingUsers.length,
   };
 
   return (
@@ -208,8 +348,49 @@ export function UsersPage() {
         <StatCard label="إجمالي المستخدمين" value={formatNumber(stats.total)} hint="جميع الحسابات" icon={<Users size={21} />} tone="slate" />
         <StatCard label="الحسابات النشطة" value={formatNumber(stats.active)} hint="يمكنها تسجيل الدخول" icon={<UserCog size={21} />} tone="emerald" />
         <StatCard label="مديرو النظام" value={formatNumber(stats.admins)} hint="صلاحية كاملة" icon={<ShieldCheck size={21} />} tone="gold" />
-        <StatCard label="حسابات أعضاء" value={formatNumber(stats.members)} hint="بوابة العضو" icon={<Users size={21} />} tone="blue" />
+        <StatCard label="طلبات تسجيل معلقة" value={formatNumber(stats.pending)} hint="بانتظار موافقة الإدارة" icon={<ShieldAlert size={21} />} tone="amber" />
       </section>
+
+      {pendingUsers.length > 0 && (
+        <Card className="pending-card">
+          <div className="pending-head">
+            <div>
+              <h3><ShieldAlert size={19} /> طلبات تسجيل جديدة</h3>
+              <p>لا يستطيع أي مستخدم جديد الدخول قبل موافقتك وتحديد دوره وصلاحياته.</p>
+            </div>
+            <Badge tone="warning" dot>{formatNumber(pendingUsers.length)} طلب</Badge>
+          </div>
+          <div className="pending-list">
+            {pendingUsers.map((row) => (
+              <div key={row.id} className="pending-row">
+                <span className="avatar">{row.full_name.charAt(0)}</span>
+                <div className="pending-info">
+                  <strong>{row.full_name}</strong>
+                  <small dir="ltr">{row.email}</small>
+                  <small>{formatDate(row.account_created_at)}</small>
+                </div>
+                <div className="row-actions">
+                  <Button
+                    size="sm"
+                    icon={<Check size={15} />}
+                    onClick={() => {
+                      setApprovalTarget(row);
+                      setApprovalRole('member');
+                      setApprovalMemberId(row.linked_member_id ?? '');
+                      setApprovalError('');
+                    }}
+                  >
+                    موافقة
+                  </Button>
+                  <Button size="sm" variant="ghost" icon={<X size={15} />} onClick={() => rejectUser(row)}>
+                    رفض
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       <div className="roles-guide">
         {roles.map((role) => (
@@ -322,7 +503,7 @@ export function UsersPage() {
                 </>
               )}
               <Field label="الدور والصلاحية" required>
-                <Select value={form.role} onChange={(e) => setForm((current) => ({ ...current, role: e.target.value as Role }))}>
+                <Select value={form.role} onChange={(e) => changeRole(e.target.value as Role)}>
                   {roles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
                 </Select>
               </Field>
@@ -335,6 +516,43 @@ export function UsersPage() {
                 </Select>
               </Field>
             </div>
+
+            <div className="permission-matrix">
+              <div className="permission-matrix-head">
+                <div>
+                  <strong>مصفوفة الصلاحيات التفصيلية</strong>
+                  <p>حدد ما يستطيع هذا المستخدم رؤيته أو إضافته أو تعديله أو حذفه أو طباعته.</p>
+                </div>
+                <Badge tone="info">{form.role === 'admin' ? 'صلاحية كاملة' : 'قابلة للتخصيص'}</Badge>
+              </div>
+              <div className="permission-groups">
+                {PERMISSION_GROUPS.map((group) => (
+                  <div key={group.title} className="permission-group">
+                    <h4>{group.title}</h4>
+                    <div className="permission-items">
+                      {group.items.map(([key, label]) => {
+                        const checked = form.role === 'admin' ? true : Boolean(permissions[key]);
+                        return (
+                          <label key={key} className={`permission-item ${checked ? 'checked' : ''}`}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={form.role === 'admin'}
+                              onChange={() => togglePermission(key)}
+                            />
+                            <span>{label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <Alert tone="info">
+                صلاحيات الدور الافتراضية تُطبق تلقائياً، ويمكنك تخصيصها لكل مستخدم. مدير النظام يملك كل الصلاحيات دائماً.
+              </Alert>
+            </div>
+
             {editing && (
               <label className="switch-field">
                 <input
@@ -352,6 +570,49 @@ export function UsersPage() {
                 تعديل الدور يغير الصلاحيات فوراً. لا يمكن إيقاف حسابك الحالي أو إزالة دور المدير عن آخر مدير نشط.
               </Alert>
             )}
+          </form>
+        </Modal>
+      )}
+
+      {approvalTarget && (
+        <Modal
+          title="الموافقة على طلب تسجيل"
+          subtitle={`${approvalTarget.full_name} — ${approvalTarget.email}`}
+          icon={<ShieldCheck size={20} />}
+          size="md"
+          onClose={() => setApprovalTarget(null)}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setApprovalTarget(null)} disabled={approvalSaving}>إلغاء</Button>
+              <Button type="submit" form="approval-form" loading={approvalSaving} icon={<Check size={16} />}>
+                تفعيل الحساب
+              </Button>
+            </>
+          }
+        >
+          <form id="approval-form" onSubmit={approveUser} className="form-stack">
+            {approvalError && <Alert tone="danger">{approvalError}</Alert>}
+            <div className="form-grid two">
+              <Field label="الدور" required>
+                <Select
+                  value={approvalRole}
+                  onChange={(event) => setApprovalRole(event.target.value as Role)}
+                >
+                  {roles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
+                </Select>
+              </Field>
+              <Field label="ربط بسجل عضو" hint="مطلوب لحساب العضو">
+                <Select value={approvalMemberId} onChange={(event) => setApprovalMemberId(event.target.value)}>
+                  <option value="">— بدون ربط —</option>
+                  {members.map((member) => (
+                    <option key={member.id} value={member.id}>{member.member_no} — {member.full_name}</option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+            <Alert tone="warning">
+              سيتم تفعيل الحساب فوراً وإرسال إشعار للمستخدم. تأكد من اختيار الدور الصحيح قبل المتابعة.
+            </Alert>
           </form>
         </Modal>
       )}

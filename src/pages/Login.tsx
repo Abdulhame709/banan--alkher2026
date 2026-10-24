@@ -81,13 +81,15 @@ export function LoginPage() {
         await login(form.email.trim(), form.password);
         toast.success('تم تسجيل الدخول بنجاح');
       } else {
-        await signup({
+        const result = await signup({
           full_name: form.full_name.trim(),
           email: form.email.trim(),
           phone: form.phone.trim(),
           password: form.password,
         });
-        toast.success('تم إنشاء الحساب بنجاح');
+        toast.success(result.message);
+        setMode('login');
+        setForm((current) => ({ ...current, password: '', confirm: '' }));
       }
     } catch (submitError) {
       setError(submitError instanceof ApiError ? submitError.message : 'تعذر إتمام العملية. حاول مرة أخرى');

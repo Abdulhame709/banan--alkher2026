@@ -23,7 +23,7 @@ interface AuthContextValue {
     email: string;
     password: string;
     phone?: string;
-  }) => Promise<void>;
+  }) => Promise<{ message: string }>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
   applySession: (payload: SessionPayload) => void;
@@ -131,9 +131,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (email: string, password: string) => {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw new ApiError(friendlyAuthError(error.message), 401);
-      await refresh();
+      const { data: sessionData } = await supabase.auth.getSession();
+      setAccessToken(sessionData.session?.access_token ?? null);
+      try {
+        const payload = await api.get<SessionPayload>('/auth/me', AbortSignal.timeout(15000));
+        if (mounted.current) applySession(payload);
+      } catch (error) {
+        await supabase.auth.signOut().catch(() => undefined);
+        setAccessToken(null);
+        if (mounted.current) clear();
+        throw error;
+      }
     },
-    [refresh]
+    [applySession, clear]
   );
 
   const signup = useCallback(
@@ -149,15 +159,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         },
       });
       if (error) throw new ApiError(friendlyAuthError(error.message), 400);
-      if (!result.session) {
-        throw new ApiError(
-          'تم إنشاء الحساب. يرجى تأكيد البريد الإلكتروني من رسالة التأكيد ثم تسجيل الدخول.',
-          200
-        );
-      }
-      await refresh();
+      // Signup creates a pending account. Never leave the new user signed in
+      // before an administrator approves the request.
+      if (result.session) await supabase.auth.signOut().catch(() => undefined);
+      setAccessToken(null);
+      clear();
+      return {
+        message: 'تم إرسال طلب التسجيل بنجاح. سيبقى الحساب معطلاً حتى توافق الإدارة عليه.',
+      };
     },
-    [refresh]
+    [clear]
   );
 
   const logout = useCallback(async () => {

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
-import { DatabaseBackup, Download, Plus, Trash2 } from 'lucide-react';
+import { DatabaseBackup, Download, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
 import { api, apiErrorMessage } from '../lib/api';
+import { useAuth } from '../lib/auth';
 import { useToast } from '../lib/toast';
 import { formatDateTime } from '../lib/format';
 import { Alert, Button, Card, CardHeader, EmptyState, LoadingState } from './ui';
@@ -62,12 +63,15 @@ async function saveOrOpenBackup(url: string, filename: string) {
 }
 
 export function BackupCard() {
+  const { capabilities } = useAuth();
   const toast = useToast();
+  const fileRef = useRef<HTMLInputElement>(null);
   const [backups, setBackups] = useState<BackupRow[]>([]);
   const [retention, setRetention] = useState(30);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(false);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
@@ -132,6 +136,54 @@ export function BackupCard() {
     }
   }
 
+  function confirmRestore() {
+    const value = window.prompt('استعادة النسخة ستستبدل البيانات المالية الحالية. اكتب كلمة RESTORE للتأكيد:');
+    return value === 'RESTORE';
+  }
+
+  async function restoreExisting(id: string) {
+    if (!confirmRestore()) return;
+    setRestoring(true);
+    setError('');
+    try {
+      const result = await api.post<{ restored: Record<string, number>; pre_restore_backup: BackupRow }>(
+        `/backups/${id}/restore`,
+        { confirm: 'RESTORE' }
+      );
+      toast.success('تمت استعادة النسخة الاحتياطية بنجاح');
+      toast.info(`تم إنشاء نسخة أمان قبل الاستعادة: ${result.pre_restore_backup.filename}`);
+      await load();
+    } catch (restoreError) {
+      setError(apiErrorMessage(restoreError));
+      toast.error(apiErrorMessage(restoreError));
+    } finally {
+      setRestoring(false);
+    }
+  }
+
+  async function restoreFromFile(file: File) {
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      if (!confirmRestore()) return;
+      setRestoring(true);
+      setError('');
+      const result = await api.post<{ restored: Record<string, number>; pre_restore_backup: BackupRow }>(
+        '/restore',
+        { confirm: 'RESTORE', backup: payload }
+      );
+      toast.success('تمت استعادة النسخة من الملف بنجاح');
+      toast.info(`تم إنشاء نسخة أمان قبل الاستعادة: ${result.pre_restore_backup.filename}`);
+      await load();
+    } catch (restoreError) {
+      setError(apiErrorMessage(restoreError));
+      toast.error(apiErrorMessage(restoreError));
+    } finally {
+      setRestoring(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  }
+
   return (
     <Card>
       <CardHeader
@@ -139,15 +191,38 @@ export function BackupCard() {
         subtitle={`نسخة كاملة من بيانات الصندوق تُحفظ في تخزين Supabase الخاص. يُحتفظ بآخر ${retention} نسخة تلقائياً.`}
         icon={<DatabaseBackup size={19} />}
         action={
-          <Button
-            variant="primary"
-            size="sm"
-            icon={<Plus size={16} />}
-            loading={creating}
-            onClick={createBackup}
-          >
-            إنشاء نسخة الآن
-          </Button>
+          <div className="backup-head-actions">
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".json,application/json"
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void restoreFromFile(file);
+              }}
+            />
+            {capabilities?.restoreBackup && (
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<Upload size={16} />}
+                loading={restoring}
+                onClick={() => fileRef.current?.click()}
+              >
+                استعادة من ملف
+              </Button>
+            )}
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<Plus size={16} />}
+              loading={creating}
+              onClick={createBackup}
+            >
+              إنشاء نسخة الآن
+            </Button>
+          </div>
         }
       />
 
@@ -193,6 +268,17 @@ export function BackupCard() {
                       >
                         تنزيل
                       </Button>
+                      {capabilities?.restoreBackup && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon={<RotateCcw size={15} />}
+                          loading={restoring}
+                          onClick={() => void restoreExisting(backup.id)}
+                        >
+                          استعادة
+                        </Button>
+                      )}
                       <Button
                         variant="ghost"
                         size="sm"
@@ -212,7 +298,8 @@ export function BackupCard() {
 
       <Alert tone="info">
         النسخة تشمل الإعدادات والأعضاء والاشتراكات وسندات القبض وطلبات الصرف والاعتمادات وسجل
-        التدقيق. لا تشمل كلمات المرور. للاستعادة راجع دليل المستخدم أو تواصل مع المسؤول التقني.
+        التدقيق. لا تشمل كلمات المرور أو حسابات المستخدمين. عند الاستعادة يتم إنشاء نسخة أمان تلقائية
+        قبل الاستبدال. استخدم «استعادة من ملف» لرفع نسخة محفوظة على جهازك.
       </Alert>
     </Card>
   );
