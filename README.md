@@ -171,6 +171,20 @@ npx supabase functions deploy api `
 - الواجهة ترسل `x-region: ap-northeast-2` لتثبيت التنفيذ في سيول.
 - روابط الصور والتنزيل تستخدم `forceFunctionRegion=ap-northeast-2`.
 
+### أسرار Edge Function في Supabase
+
+```powershell
+supabase secrets set CRON_SECRET="<cron-secret>" `
+  --project-ref vhyckuwhuhdyvhxyqdgt
+
+supabase secrets set APP_ORIGINS="https://walid19-89.github.io,https://abdulhame709.github.io,http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173,http://127.0.0.1:4173,https://localhost,capacitor://localhost" `
+  --project-ref vhyckuwhuhdyvhxyqdgt
+
+# اختياري: القيمة الافتراضية هي ap-northeast-2
+supabase secrets set BANAN_REGION="ap-northeast-2" `
+  --project-ref vhyckuwhuhdyvhxyqdgt
+```
+
 ### اختبار سريع
 
 ```powershell
@@ -332,17 +346,18 @@ cd android
 
 ## 11. حالة التشغيل والحسابات
 
-البيانات المالية والأعضاء التجريبية **تم تفريغها**، والنظام الآن في حالة نظيفة جاهزة
-لإدخال بيانات الصندوق الحقيقية. الحسابات التجريبية القديمة (`accountant`، `treasurer`،
-`board`، `member`) حُذفت.
+المشروع الجديد بدأ بقاعدة بيانات نظيفة. البيانات المالية والأعضاء التجريبية **غير موجودة**،
+والنظام جاهز لإدخال بيانات الصندوق الحقيقية. المشروع القديم يبقى كنسخة احتياطية حتى يتم
+التأكد من المشروع الجديد بالكامل.
 
-الحسابات المتبقية:
+الحساب الموجود حالياً:
 
 | البريد | الدور | ملاحظة |
 |---|---|---|
-| `admin@banan.org` | مدير النظام | كلمة المرور في `SUPABASE_KEYS.txt` تحت `ADMIN_PASSWORD` |
-| `abduh772022@gmail.com` | أمين صندوق | حساب حقيقي محفوظ |
-| `geekm2025@gmail.com` | عضو | حساب حقيقي محفوظ، اربطه بعضو من صفحة المستخدمين |
+| `wabdo7646@gmail.com` | مدير النظام | كلمة المرور في `SUPABASE_KEYS.txt` تحت `ADMIN_PASSWORD` |
+
+الحسابات القديمة (`admin@banan.org`، `abduh772022@gmail.com`، `geekm2025@gmail.com`)
+لم تُنقل إلى المشروع الجديد. أنشئ الحسابات الحقيقية من صفحة **المستخدمين** عند الحاجة.
 
 بعد أول دخول:
 
