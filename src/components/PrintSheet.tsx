@@ -1,7 +1,9 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Printer, X } from 'lucide-react';
+import { Download, Printer, QrCode, ShieldCheck, X } from 'lucide-react';
 import { useAuth } from '../lib/auth';
+import { downloadElementAsPdf } from '../lib/pdf';
+import { verifyDocumentUrl } from '../lib/public';
 import {
   EXPENSE_CATEGORY_LABELS,
   formatDate,
@@ -14,7 +16,7 @@ import {
   subscriptionStatus,
 } from '../lib/format';
 import { FundLogo } from './Logo';
-import type { Expense, Member, Receipt, Subscription } from '../types';
+import type { Attachment, Expense, Member, Receipt, Subscription } from '../types';
 
 export function PrintPreview({
   title,
@@ -25,6 +27,9 @@ export function PrintPreview({
   onClose: () => void;
   children: ReactNode;
 }) {
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState('');
+
   useEffect(() => {
     const root = document.getElementById('print-root');
     root?.classList.add('print-open');
@@ -40,6 +45,20 @@ export function PrintPreview({
     };
   }, [onClose]);
 
+  async function downloadPdf() {
+    const sheet = document.querySelector('.print-scroll .print-sheet') as HTMLElement | null;
+    if (!sheet) return;
+    setDownloadError('');
+    setDownloading(true);
+    try {
+      await downloadElementAsPdf(sheet, title);
+    } catch {
+      setDownloadError('تعذر إنشاء ملف PDF. استخدم زر الطباعة ثم اختر «حفظ كـ PDF».');
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   const target = document.getElementById('print-root');
   if (!target) return null;
 
@@ -49,11 +68,16 @@ export function PrintPreview({
         <div>
           <strong>{title}</strong>
           <span>معاينة الطباعة — مقاس A4</span>
+          {downloadError && <small className="print-toolbar-error">{downloadError}</small>}
         </div>
         <div className="print-toolbar-actions">
+          <button type="button" className="btn btn-secondary btn-sm" onClick={downloadPdf} disabled={downloading}>
+            <Download size={16} />
+            <span>{downloading ? 'جارٍ إنشاء PDF…' : 'تنزيل PDF'}</span>
+          </button>
           <button type="button" className="btn btn-primary btn-sm" onClick={() => window.print()}>
             <Printer size={16} />
-            <span>طباعة / حفظ PDF</span>
+            <span>طباعة</span>
           </button>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="إغلاق المعاينة">
             <X size={20} />
@@ -93,6 +117,95 @@ function Signatures({ labels }: { labels: string[] }) {
           <small>التوقيع والتاريخ</small>
         </div>
       ))}
+    </div>
+  );
+}
+
+function PrintAttachments({ attachments }: { attachments?: Attachment[] }) {
+  if (!attachments?.length) return null;
+  return (
+    <div className="print-attachments">
+      <span>المرفقات ({attachments.length})</span>
+      <ul>
+        {attachments.map((attachment) => (
+          <li key={attachment.id}>
+            <PaperclipIcon />
+            {attachment.original_name || attachment.file_name}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function PaperclipIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+    </svg>
+  );
+}
+
+function VerificationBlock({
+  type,
+  token,
+  signatureData,
+  signedByName,
+  signedAt,
+  attachments,
+}: {
+  type: 'receipt' | 'expense';
+  token?: string | null;
+  signatureData?: string | null;
+  signedByName?: string | null;
+  signedAt?: string | null;
+  attachments?: Attachment[];
+}) {
+  const [qr, setQr] = useState('');
+  useEffect(() => {
+    let active = true;
+    if (!token) {
+      setQr('');
+      return;
+    }
+    void import('qrcode')
+      .then((module) =>
+        module.toDataURL(verifyDocumentUrl(type, token), {
+          margin: 1,
+          width: 180,
+          color: { dark: '#0f172a', light: '#ffffff' },
+        })
+      )
+      .then((url) => {
+        if (active) setQr(url);
+      })
+      .catch(() => {
+        if (active) setQr('');
+      });
+    return () => {
+      active = false;
+    };
+  }, [type, token]);
+
+  return (
+    <div className="print-verification">
+      <div className="print-verification-qr">
+        {qr ? <img src={qr} alt="رمز التحقق" /> : <QrCode size={54} />}
+        <small>امسح الرمز للتحقق</small>
+      </div>
+      <div className="print-verification-signature">
+        <span><ShieldCheck size={15} /> التوقيع الإلكتروني</span>
+        {signatureData ? (
+          <>
+            <img src={signatureData} alt={`توقيع ${signedByName ?? ''}`} />
+            <strong>{signedByName || 'موقّع إلكترونياً'}</strong>
+            <small>{signedAt ? formatDateTime(signedAt) : ''}</small>
+          </>
+        ) : (
+          <small className="muted">لم يُسجل توقيع إلكتروني بعد.</small>
+        )}
+      </div>
+      <PrintAttachments attachments={attachments} />
     </div>
   );
 }
@@ -146,6 +259,15 @@ export function ReceiptVoucher({
         </div>
 
         <Signatures labels={['المحاسب', 'أمين الصندوق', 'المستلم']} />
+
+        <VerificationBlock
+          type="receipt"
+          token={receipt.verify_token}
+          signatureData={receipt.signature_data}
+          signedByName={receipt.signed_by_name}
+          signedAt={receipt.signed_at}
+          attachments={receipt.attachments}
+        />
 
         <footer className="print-footer">
           <span>صندوق بنان الخير للبنيان — الغدير – مقبنة – تعز</span>
@@ -236,6 +358,15 @@ export function PaymentVoucher({
         </div>
 
         <Signatures labels={['المستلم', 'أمين الصندوق', 'المدقق المالي']} />
+
+        <VerificationBlock
+          type="expense"
+          token={expense.verify_token}
+          signatureData={expense.signature_data}
+          signedByName={expense.signed_by_name}
+          signedAt={expense.signed_at}
+          attachments={expense.attachments}
+        />
 
         <footer className="print-footer">
           <span>صندوق بنان الخير للبنيان — الغدير – مقبنة – تعز</span>

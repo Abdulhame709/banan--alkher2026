@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Download,
@@ -6,14 +6,15 @@ import {
   FileText,
   Gift,
   HeartHandshake,
-  Paperclip,
+  PenLine,
   Plus,
   ReceiptText,
   RotateCcw,
   Trash2,
+  Upload,
   Wallet,
 } from 'lucide-react';
-import { api, apiErrorMessage, downloadCsv, fileUrl } from '../lib/api';
+import { api, apiErrorMessage, downloadCsv } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useRealtimeVersion } from '../lib/realtime';
 import { useToast } from '../lib/toast';
@@ -42,11 +43,13 @@ import {
   TextInput,
   Textarea,
 } from '../components/ui';
-import { FileUpload } from '../components/FileUpload';
+import { MultiFileUpload } from '../components/MultiFileUpload';
+import { AttachmentLinks } from '../components/AttachmentLinks';
+import { SignatureModal } from '../components/SignaturePad';
 import { AmountInput, parseAmount } from '../components/AmountInput';
 import { HijriDateInput } from '../components/HijriInputs';
 import { ReceiptVoucher } from '../components/PrintSheet';
-import type { Member, Receipt } from '../types';
+import type { Attachment, Member, Receipt, UploadedAttachment } from '../types';
 
 export function ReceiptsPage() {
   const { capabilities } = useAuth();
@@ -69,6 +72,10 @@ export function ReceiptsPage() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
   const [printing, setPrinting] = useState<Receipt | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+  const [signingReceipt, setSigningReceipt] = useState<Receipt | null>(null);
+  const [savingSignature, setSavingSignature] = useState(false);
   const [form, setForm] = useState({
     receipt_type: 'donation',
     member_id: '',
@@ -80,6 +87,7 @@ export function ReceiptsPage() {
     receipt_date: todayISO(),
     notes: '',
     attachment_url: null as string | null,
+    attachments: [] as UploadedAttachment[],
   });
   const [editingReceipt, setEditingReceipt] = useState<Receipt | null>(null);
   const [editForm, setEditForm] = useState({
@@ -90,7 +98,10 @@ export function ReceiptsPage() {
     restricted_purpose: '',
     receipt_date: todayISO(),
     notes: '',
+    attachments: [] as UploadedAttachment[],
   });
+  const [existingAttachments, setExistingAttachments] = useState<Attachment[]>([]);
+  const [removedAttachmentIds, setRemovedAttachmentIds] = useState<string[]>([]);
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState('');
 
@@ -159,6 +170,7 @@ export function ReceiptsPage() {
       receipt_date: todayISO(),
       notes: '',
       attachment_url: null,
+      attachments: [],
     });
     setFormError('');
     setOpen(true);
@@ -193,6 +205,7 @@ export function ReceiptsPage() {
         receipt_date: form.receipt_date,
         notes: form.notes.trim() || null,
         attachment_url: form.attachment_url,
+        attachments: form.attachments,
       });
       toast.success(`تم إصدار سند القبض ${refReceipt(payload.receipt.receipt_no)} بنجاح`);
       setOpen(false);
@@ -215,7 +228,10 @@ export function ReceiptsPage() {
       restricted_purpose: receipt.restricted_purpose ?? '',
       receipt_date: receipt.receipt_date,
       notes: receipt.notes ?? '',
+      attachments: [],
     });
+    setExistingAttachments(receipt.attachments ?? []);
+    setRemovedAttachmentIds([]);
     setEditError('');
   }
 
@@ -242,6 +258,8 @@ export function ReceiptsPage() {
         restricted_purpose: editForm.is_restricted ? editForm.restricted_purpose.trim() : null,
         receipt_date: editForm.receipt_date,
         notes: editForm.notes.trim() || null,
+        attachments: editForm.attachments,
+        removed_attachment_ids: removedAttachmentIds,
       });
       toast.success('تم تحديث السند');
       setEditingReceipt(null);
@@ -261,6 +279,123 @@ export function ReceiptsPage() {
       await load(false);
     } catch (deleteError) {
       toast.error(apiErrorMessage(deleteError));
+    }
+  }
+
+  function parseCsv(text: string): string[][] {
+    const rows: string[][] = [];
+    let row: string[] = [];
+    let cell = '';
+    let quoted = false;
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      if (quoted) {
+        if (char === '"' && text[index + 1] === '"') { cell += '"'; index += 1; }
+        else if (char === '"') quoted = false;
+        else cell += char;
+      } else if (char === '"') quoted = true;
+      else if (char === ',') { row.push(cell); cell = ''; }
+      else if (char === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+      else if (char !== '\r') cell += char;
+    }
+    if (cell || row.length) { row.push(cell); rows.push(row); }
+    return rows.filter((line) => line.some((value) => String(value ?? '').trim()));
+  }
+
+  function normalizeImportDate(value: unknown) {
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+      return value.toISOString().slice(0, 10);
+    }
+    if (typeof value === 'number' && value > 20000) {
+      return new Date(Date.UTC(1899, 11, 30) + value * 86400000).toISOString().slice(0, 10);
+    }
+    const text = String(value ?? '').trim();
+    const match = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(text);
+    if (match) return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+    return todayISO();
+  }
+
+  async function importReceipts(file: File) {
+    setImporting(true);
+    try {
+      let rows: unknown[][] = [];
+      if (file.name.toLowerCase().endsWith('.csv')) {
+        rows = parseCsv(await file.text());
+      } else {
+        const { readSheet } = await import('read-excel-file/browser');
+        rows = await readSheet(file);
+      }
+      if (rows.length < 2) throw new Error('الملف فارغ أو لا يحتوي على صفوف بيانات');
+      const headers = rows[0].map((value) => String(value ?? '').trim());
+      const find = (...names: string[]) => headers.findIndex((header) => names.includes(header));
+      const typeIndex = find('نوع السند', 'receipt_type');
+      const memberIndex = find('رقم العضوية', 'member_no');
+      const donorIndex = find('اسم المتبرع', 'الجهة', 'المتبرع', 'donor_name');
+      const amountIndex = find('المبلغ', 'amount');
+      const methodIndex = find('طريقة الدفع', 'payment_method');
+      const dateIndex = find('التاريخ', 'تاريخ السند', 'receipt_date');
+      const restrictedIndex = find('مخصص', 'is_restricted');
+      const purposeIndex = find('الغرض', 'الغرض المخصص', 'restricted_purpose');
+      const notesIndex = find('ملاحظات', 'notes');
+
+      const memberByNo = new Map(members.map((member) => [member.member_no, member.id]));
+      const receipts = rows.slice(1).map((row) => {
+        const typeText = String(row[typeIndex] ?? '').trim().toLowerCase();
+        const typeValue = typeText.includes('اشتراك') || typeText === 'subscription'
+          ? 'subscription'
+          : typeText.includes('تبرع') || typeText === 'donation'
+            ? 'donation'
+            : 'other';
+        const methodText = String(row[methodIndex] ?? '').trim().toLowerCase();
+        const methodValue = methodText.includes('بنك') || methodText.includes('حوالة') || methodText === 'bank_transfer'
+          ? 'bank_transfer'
+          : 'cash';
+        const restrictedText = String(row[restrictedIndex] ?? '').trim().toLowerCase();
+        return {
+          receipt_type: typeValue,
+          member_id: memberByNo.get(String(row[memberIndex] ?? '').trim()) ?? null,
+          donor_name: String(row[donorIndex] ?? '').trim() || null,
+          amount: String(row[amountIndex] ?? '').replace(/[^\d]/g, ''),
+          payment_method: methodValue,
+          receipt_date: normalizeImportDate(row[dateIndex]),
+          is_restricted: ['نعم', 'true', '1', 'مخصص'].includes(restrictedText),
+          restricted_purpose: String(row[purposeIndex] ?? '').trim() || null,
+          notes: String(row[notesIndex] ?? '').trim() || null,
+        };
+      }).filter((row) => row.amount && (row.donor_name || row.member_id));
+
+      if (!receipts.length) throw new Error('لم يتم العثور على صفوف صالحة في الملف');
+      if (receipts.some((row) => row.receipt_type === 'subscription')) {
+        throw new Error('سندات الاشتراكات لا تُستورد من Excel. استخدم صفحة الاستحقاقات لتسجيل السداد.');
+      }
+      const result = await api.post<{ imported: number; skipped: number; errors: string[] }>(
+        '/receipts/import',
+        { receipts }
+      );
+      toast.success(`تم استيراد ${formatNumber(result.imported)} سند قبض`);
+      if (result.errors?.length) toast.error(result.errors[0]);
+      await load(false);
+    } catch (importError) {
+      toast.error(apiErrorMessage(importError));
+    } finally {
+      setImporting(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  }
+
+  async function signReceipt(data: { signed_by_name: string; signature_data: string }) {
+    if (!signingReceipt) return;
+    setSavingSignature(true);
+    try {
+      const payload = await api.post<{ receipt: Receipt }>(`/receipts/${signingReceipt.id}/sign`, data);
+      toast.success('تم حفظ التوقيع الإلكتروني');
+      setSigningReceipt(null);
+      setPrinting((current) => current?.id === payload.receipt.id ? payload.receipt : current);
+      await load(false);
+    } catch (signError) {
+      toast.error(apiErrorMessage(signError));
+    } finally {
+      setSavingSignature(false);
     }
   }
 
@@ -293,6 +428,23 @@ export function ReceiptsPage() {
           <>
             {capabilities?.exportReports && (
               <Button variant="secondary" icon={<Download size={17} />} onClick={exportDonations}>تصدير التبرعات CSV</Button>
+            )}
+            {capabilities?.addReceipts && (
+              <>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".xlsx,.csv"
+                  hidden
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) importReceipts(file);
+                  }}
+                />
+                <Button variant="secondary" icon={<Upload size={17} />} loading={importing} onClick={() => fileRef.current?.click()}>
+                  استيراد Excel
+                </Button>
+              </>
             )}
             {capabilities?.addReceipts && (
               <Button icon={<Plus size={17} />} onClick={openModal}>تسجيل سند قبض</Button>
@@ -401,17 +553,12 @@ export function ReceiptsPage() {
                             <Trash2 size={16} />
                           </button>
                         )}
-                        {receipt.attachment_url && (
-                          <a
-                            className="icon-btn"
-                            href={fileUrl(receipt.attachment_url)}
-                            target="_blank"
-                            rel="noreferrer"
-                            title="عرض المرفق"
-                          >
-                            <Paperclip size={16} />
-                          </a>
+                        {capabilities?.printReceipts && (
+                          <button type="button" className="icon-btn" title={receipt.signed_by_name ? 'تحديث التوقيع الإلكتروني' : 'توقيع إلكتروني'} onClick={() => setSigningReceipt(receipt)}>
+                            <PenLine size={16} />
+                          </button>
                         )}
+                        <AttachmentLinks attachments={receipt.attachments} legacyUrl={receipt.attachment_url} compact />
                       </div>
                     </td>
                   </tr>
@@ -536,11 +683,11 @@ export function ReceiptsPage() {
               />
             </Field>
 
-            <FileUpload
-              value={form.attachment_url}
-              onChange={(file) => setForm((current) => ({ ...current, attachment_url: file }))}
-              label="مرفق السند (اختياري)"
-              hint="صورة إشعار الحوالة أو مستند التبرع — صورة أو PDF بحد أقصى 8 ميجابايت"
+            <MultiFileUpload
+              value={form.attachments}
+              onChange={(attachments) => setForm((current) => ({ ...current, attachments }))}
+              label="مرفقات السند (اختياري)"
+              hint="يمكن إرفاق حتى 10 ملفات — صورة إشعار الحوالة أو مستند التبرع، بحد أقصى 8 ميجابايت للملف"
             />
           </form>
         </Modal>
@@ -628,8 +775,30 @@ export function ReceiptsPage() {
                 rows={2}
               />
             </Field>
+            <MultiFileUpload
+              value={editForm.attachments}
+              onChange={(attachments) => setEditForm((current) => ({ ...current, attachments }))}
+              existing={existingAttachments}
+              onRemoveExisting={(attachment) => {
+                setExistingAttachments((current) => current.filter((item) => item.id !== attachment.id));
+                setRemovedAttachmentIds((current) => [...current, attachment.id]);
+              }}
+              label="مرفقات السند"
+              hint="أضف مرفقات جديدة أو احذف مرفقاً موجوداً، ثم احفظ التعديلات."
+            />
           </form>
         </Modal>
+      )}
+
+      {signingReceipt && (
+        <SignatureModal
+          title="توقيع سند القبض إلكترونياً"
+          subtitle={`${refReceipt(signingReceipt.receipt_no)} — ${money(signingReceipt.amount)}`}
+          defaultName={signingReceipt.signed_by_name ?? ''}
+          saving={savingSignature}
+          onSave={signReceipt}
+          onClose={() => setSigningReceipt(null)}
+        />
       )}
 
       {printing && <ReceiptVoucher receipt={printing} onClose={() => setPrinting(null)} />}

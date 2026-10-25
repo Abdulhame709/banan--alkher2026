@@ -28,10 +28,13 @@ const BACKUP_TABLES = [
   'fund_settings',
   'fund_user_profiles',
   'fund_members',
+  'fund_subscription_exclusions',
   'fund_subscriptions',
   'fund_receipts',
   'fund_expense_requests',
   'fund_expense_approvals',
+  'fund_attachments',
+  'fund_reminder_logs',
   'fund_audit_logs',
   'sequences',
 ];
@@ -261,6 +264,38 @@ function oneOf(value: unknown, allowed: string[], { name = 'القيمة' } = {}
   return String(value);
 }
 
+function intRange(value: unknown, min: number, max: number, { name = 'القيمة' } = {}) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < min || number > max) {
+    throw new HttpError(400, `${name} يجب أن يكون رقماً صحيحاً بين ${min} و${max}`);
+  }
+  return number;
+}
+
+function phoneDigits(value: unknown) {
+  let digits = String(value ?? '').replace(/\D/g, '');
+  if (digits.startsWith('00967')) digits = digits.slice(5);
+  else if (digits.length > 9 && digits.startsWith('967')) digits = digits.slice(3);
+  else if (digits.length > 9 && digits.startsWith('0')) digits = digits.slice(1);
+  return digits;
+}
+
+async function ensurePhoneLoginAvailable(phone: string | null, excludeUserId?: string) {
+  const digits = phoneDigits(phone);
+  if (digits.length < 6 || digits.length > 15) {
+    throw new HttpError(400, 'رقم الهاتف غير صالح للدخول. أدخل رقماً دولياً أو محلياً صحيحاً');
+  }
+  const exclude = excludeUserId ?? '00000000-0000-0000-0000-000000000000';
+  const rows = await sql`select user_id from fund_user_profiles
+    where phone_login_enabled = true
+      and public.normalize_phone(phone) = ${digits}
+      and user_id <> ${exclude}
+    limit 1`;
+  if (rows.length) {
+    throw new HttpError(409, 'رقم الهاتف مستخدم لحساب آخر مفعّل للدخول بالهاتف');
+  }
+}
+
 function bool(value: unknown, fallback = false) {
   if (value === undefined || value === null || value === '') return fallback;
   if (typeof value === 'boolean') return value;
@@ -412,7 +447,8 @@ function hijriRange(from: { year: number; month: number }, to: { year: number; m
 async function ensureDuesForMonth(
   db: any,
   month: { year: number; month: number; key: string },
-  memberIds: string[] | null = null
+  memberIds: string[] | null = null,
+  { ignoreExclusions = false }: { ignoreExclusions?: boolean } = {}
 ) {
   const dueMonth = fromHijri(month.year, month.month, 1);
   if (!dueMonth) throw new HttpError(400, 'تعذر تحويل الشهر الهجري إلى تاريخ ميلادي');
@@ -426,6 +462,22 @@ async function ensureDuesForMonth(
     if (Number(member.monthly_fee) <= 0) {
       skipped += 1;
       continue;
+    }
+    if (ignoreExclusions) {
+      // An explicit generate action is a deliberate request to recreate a due
+      // that was previously deleted manually.
+      await db`delete from fund_subscription_exclusions
+        where member_id = ${member.id}
+          and hijri_year = ${month.year} and hijri_month = ${month.month}`;
+    } else {
+      const excluded = await db`select 1 from fund_subscription_exclusions
+        where member_id = ${member.id}
+          and hijri_year = ${month.year} and hijri_month = ${month.month}
+        limit 1`;
+      if (excluded.length) {
+        skipped += 1;
+        continue;
+      }
     }
     const existing = await db`select id from fund_subscriptions
       where member_id = ${member.id}
@@ -476,6 +528,83 @@ function validFileName(value: unknown) {
     throw new HttpError(400, 'اسم الملف غير صالح');
   }
   return name;
+}
+
+function attachmentList(value: unknown) {
+  if (value === undefined || value === null || value === '') return [];
+  if (!Array.isArray(value)) throw new HttpError(400, 'قائمة المرفقات غير صالحة');
+  if (value.length > 10) throw new HttpError(400, 'الحد الأقصى 10 مرفقات لكل مستند');
+  return value.map((item: any, index: number) => {
+    const file = validFileName(item?.file ?? item?.file_name ?? item?.attachment_url);
+    if (!file) throw new HttpError(400, `المرفق رقم ${index + 1} غير صالح`);
+    const name = str(item?.name ?? item?.original_name, { name: `اسم المرفق ${index + 1}`, max: 200 }) ?? file;
+    const mime = str(item?.mime ?? item?.mime_type, { name: `نوع المرفق ${index + 1}`, max: 120 });
+    const size = Number(item?.size ?? item?.size_bytes ?? 0);
+    if (!Number.isFinite(size) || size < 0 || size > 8 * 1024 * 1024) {
+      throw new HttpError(400, `حجم المرفق رقم ${index + 1} غير صالح`);
+    }
+    return { file, name, mime, size: Math.trunc(size) };
+  });
+}
+
+async function insertAttachments(
+  db: any,
+  entityType: 'receipt' | 'expense',
+  entityId: string,
+  attachments: Array<{ file: string; name: string; mime: string | null; size: number }>,
+  user: any
+) {
+  for (const attachment of attachments) {
+    await db`insert into fund_attachments
+      (entity_type, entity_id, file_name, original_name, mime_type, size_bytes, uploaded_by)
+      values (${entityType}, ${entityId}, ${attachment.file}, ${attachment.name},
+        ${attachment.mime}, ${attachment.size}, ${user.id})`;
+  }
+}
+
+async function attachmentsFor(db: any, entityType: 'receipt' | 'expense', entityIds: string[]) {
+  const map = new Map<string, any[]>();
+  if (!entityIds.length) return map;
+  const rows = await db`select id, entity_type, entity_id, file_name, original_name, mime_type,
+      size_bytes, uploaded_by, created_at
+    from fund_attachments
+    where entity_type = ${entityType} and entity_id = any(${entityIds})
+    order by created_at asc`;
+  for (const row of rows) {
+    if (!map.has(row.entity_id)) map.set(row.entity_id, []);
+    map.get(row.entity_id)!.push(row);
+  }
+  return map;
+}
+
+async function withAttachments(db: any, entityType: 'receipt' | 'expense', rows: any[]) {
+  const map = await attachmentsFor(db, entityType, rows.map((row: any) => row.id));
+  return rows.map((row: any) => ({ ...row, attachments: map.get(row.id) ?? [] }));
+}
+
+async function deleteAttachmentsForEntity(db: any, entityType: 'receipt' | 'expense', entityId: string) {
+  const rows = await db`select file_name from fund_attachments
+    where entity_type = ${entityType} and entity_id = ${entityId}`;
+  await db`delete from fund_attachments where entity_type = ${entityType} and entity_id = ${entityId}`;
+  return rows.map((row: any) => row.file_name);
+}
+
+async function deleteStorageObjects(names: string[]) {
+  const unique = [...new Set(names.filter(Boolean))];
+  if (!unique.length) return;
+  try {
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}`, {
+      method: 'DELETE',
+      headers: {
+        apikey: SERVICE_KEY,
+        Authorization: `Bearer ${SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ prefixes: unique }),
+    });
+  } catch (error) {
+    console.error('storage cleanup failed', error);
+  }
 }
 
 function csvResponse(filename: string, headers: string[], rows: (string | number | null)[][]) {
@@ -554,6 +683,7 @@ async function requireUser(c: any) {
     permissions,
     capabilities: capabilitiesFor(profile.role, permissions),
     linked_member_id: profile.linked_member_id,
+    phone_login_enabled: Boolean(profile.phone_login_enabled),
     created_at: profile.created_at,
   };
 }
@@ -653,6 +783,74 @@ async function arrearsPosition(db: any = sql) {
   };
 }
 
+async function buildAlerts(db: any = sql) {
+  const settings = await getSettings(db);
+  const position = await cashPosition(db);
+  const arrears = await arrearsPosition(db);
+  const membersInArrears = Number((await db`select count(*) as count from (
+    select member_id from fund_subscriptions where status <> 'paid' group by member_id
+  ) x`)[0].count);
+  const pending = (await db`select count(*) as count,
+      coalesce(max(extract(day from now() - created_at)), 0) as max_days
+    from fund_expense_requests where status = 'pending'`)[0];
+  const alerts: any[] = [];
+  const cashThreshold = Number(settings.cash_alert_threshold ?? 0);
+  if (cashThreshold > 0 && position.cash_balance <= cashThreshold) {
+    alerts.push({
+      id: 'cash_low',
+      severity: position.cash_balance <= 0 ? 'danger' : 'warning',
+      title: 'الرصيد النقدي عند الحد التحذيري',
+      message: `الرصيد الحالي ${moneyLabel(position.cash_balance)}، والحد الأدنى المحدد ${moneyLabel(cashThreshold)}.`,
+      link: '/reports?tab=cash',
+    });
+  }
+  const commitmentPercent = Number(settings.commitment_alert_percent ?? 80);
+  if (position.cash_balance > 0 && (position.committed_pending / position.cash_balance) * 100 >= commitmentPercent) {
+    alerts.push({
+      id: 'commitment_high',
+      severity: 'warning',
+      title: 'التزامات الصرف المرتفعة',
+      message: `الالتزامات المعتمدة ${moneyLabel(position.committed_pending)} تمثل ${Math.round((position.committed_pending / position.cash_balance) * 100)}% من الرصيد النقدي.`,
+      link: '/expenses?status=approved',
+    });
+  }
+  const approvalDays = Number(settings.approval_alert_days ?? 3);
+  if (Number(pending.count) > 0 && Number(pending.max_days) >= approvalDays) {
+    alerts.push({
+      id: 'approval_delayed',
+      severity: 'warning',
+      title: 'طلبات اعتماد متأخرة',
+      message: `يوجد ${Number(pending.count)} طلب صرف بانتظار الاعتماد، وأقدمها متأخر ${Number(pending.max_days)} يوماً.`,
+      link: '/expenses?status=pending',
+    });
+  }
+  if (arrears.total_arrears > 0) {
+    alerts.push({
+      id: 'arrears',
+      severity: 'info',
+      title: 'متأخرات اشتراكات قائمة',
+      message: `إجمالي المتأخرات ${moneyLabel(arrears.total_arrears)} موزعة على ${membersInArrears} عضواً.`,
+      link: '/reports?tab=arrears',
+    });
+  }
+  const reminderDay = Number(settings.reminder_day ?? 25);
+  const dayOfMonth = toHijri(new Date()).day;
+  if (membersInArrears > 0 && dayOfMonth >= reminderDay) {
+    alerts.push({
+      id: 'month_end_reminder',
+      severity: 'info',
+      title: 'موعد تذكير نهاية الشهر',
+      message: `بقي ${Math.max(0, 30 - dayOfMonth)} يوماً على نهاية الشهر. يمكنك إرسال تذكيرات واتساب أو SMS لـ ${membersInArrears} عضواً متأخراً.`,
+      link: '/reports?tab=arrears&remind=1',
+    });
+  }
+  return alerts;
+}
+
+function moneyLabel(value: unknown) {
+  return `${round2(value).toLocaleString('en-US')} ر.ي`;
+}
+
 async function periodTotals(db: any, from: string, to: string) {
   const receipts = await db`select coalesce(sum(amount), 0) as total from fund_receipts where receipt_date between ${from} and ${to}`;
   const paidExpenses = await db`select coalesce(sum(amount), 0) as total from fund_expense_requests
@@ -672,7 +870,10 @@ async function getReceipt(id: string) {
       left join fund_members m on m.id = r.member_id
       left join fund_user_profiles p on p.user_id = r.created_by
      where r.id = ${id}`;
-  return rows[0] ?? null;
+  if (!rows.length) return null;
+  const receipt = rows[0];
+  receipt.attachments = (await attachmentsFor(sql, 'receipt', [id])).get(id) ?? [];
+  return receipt;
 }
 
 async function getExpense(id: string) {
@@ -686,6 +887,7 @@ async function getExpense(id: string) {
   const expense = rows[0];
   expense.approvals = await sql`
     select * from fund_expense_approvals where request_id = ${id} order by created_at asc`;
+  expense.attachments = (await attachmentsFor(sql, 'expense', [id])).get(id) ?? [];
   return expense;
 }
 
@@ -809,6 +1011,30 @@ async function notifyUsers(
 async function notifyRoles(db: any, roles: string[], payload: any, excludeId?: string) {
   const rows = await db`select user_id from fund_user_profiles where active = true and role = any(${roles})`;
   await notifyUsers(db, rows.map((row: any) => row.user_id), payload, excludeId);
+}
+
+async function remindArrearsBeforeMonthEnd() {
+  const settings = await getSettings();
+  const reminderDay = Number(settings.reminder_day ?? 25);
+  const dayOfMonth = toHijri(new Date()).day;
+  if (dayOfMonth < reminderDay) {
+    return { sent: false, reason: 'not_due', day: dayOfMonth, reminder_day: reminderDay };
+  }
+  const rows = await arrearsRows();
+  if (!rows.length) return { sent: false, reason: 'no_arrears', members: 0 };
+  const already = await sql`select 1 from fund_notifications
+    where type = 'arrears_reminder' and created_at >= current_date limit 1`;
+  if (already.length) {
+    return { sent: false, reason: 'already_sent', members: rows.length };
+  }
+  const total = round2(rows.reduce((sum: number, row: any) => sum + Number(row.arrears), 0));
+  await notifyRoles(sql, ['admin', 'treasurer', 'fund_manager', 'secretary_general'], {
+    type: 'arrears_reminder',
+    title: 'تذكير المتأخرات قبل نهاية الشهر',
+    body: `يوجد ${rows.length} عضواً عليهم متأخرات بإجمالي ${total.toLocaleString('en-US')} ر.ي. يمكنك إرسال تذكيرات واتساب أو SMS من تقرير المتأخرات.`,
+    link: '/reports?tab=arrears&remind=1',
+  });
+  return { sent: true, members: rows.length, total };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -954,16 +1180,92 @@ app.get('/cron/dues', async (c) => {
   const provided = c.req.header('x-cron-secret') ?? c.req.query('secret') ?? '';
   if (!secret || provided !== secret) throw new HttpError(401, 'مفتاح المهمة الدورية غير صالح');
   const result = await ensureCurrentMonthDues(sql);
+  const reminder = await remindArrearsBeforeMonthEnd();
   return c.json({
     ok: true,
     month: currentHijriMonth(),
     ...result,
+    reminder,
+    time: new Date().toISOString(),
+  });
+});
+
+app.get('/cron/reminders', async (c) => {
+  const secret = Deno.env.get('CRON_SECRET') ?? '';
+  const provided = c.req.header('x-cron-secret') ?? c.req.query('secret') ?? '';
+  if (!secret || provided !== secret) throw new HttpError(401, 'مفتاح المهمة الدورية غير صالح');
+  return c.json({
+    ok: true,
+    reminder: await remindArrearsBeforeMonthEnd(),
     time: new Date().toISOString(),
   });
 });
 
 
 app.get('/public/settings', async (c) => c.json({ settings: await publicSettings() }));
+
+app.get('/public/verify/:type/:token', async (c) => {
+  const type = String(c.req.param('type'));
+  const token = String(c.req.param('token')).toLowerCase();
+  if (!['receipt', 'expense'].includes(type)) {
+    throw new HttpError(404, 'نوع المستند غير معروف');
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(token)) {
+    throw new HttpError(404, 'رابط التحقق غير صالح');
+  }
+  const settings = await getSettings();
+  if (type === 'receipt') {
+    const rows = await sql`select r.id, r.receipt_no, r.receipt_type, r.amount, r.receipt_date,
+        r.signed_by_name, r.signed_at, r.verify_token,
+        coalesce(m.full_name, r.donor_name, 'متبرع') as party
+      from fund_receipts r
+      left join fund_members m on m.id = r.member_id
+      where r.verify_token = ${token} limit 1`;
+    if (!rows.length) throw new HttpError(404, 'لم يتم العثور على سند بهذا الرابط');
+    const row = rows[0];
+    return c.json({
+      ok: true,
+      type: 'receipt',
+      fund_name: settings.fund_name,
+      document_no: `REC-${String(row.receipt_no).padStart(4, '0')}`,
+      amount: round2(row.amount),
+      date: row.receipt_date,
+      party: row.party,
+      document_label: RECEIPT_TYPE_LABELS[row.receipt_type] ?? 'سند قبض',
+      status: 'صادر',
+      signed_by_name: row.signed_by_name,
+      signed_at: row.signed_at,
+      signature_present: Boolean(row.signed_by_name),
+      verified_at: new Date().toISOString(),
+    });
+  }
+  const rows = await sql`select id, request_no, payment_voucher_no, category, amount, status,
+      beneficiary_name, disbursed_at, signed_by_name, signed_at, verify_token
+    from fund_expense_requests where verify_token = ${token} limit 1`;
+  if (!rows.length) throw new HttpError(404, 'لم يتم العثور على سند صرف بهذا الرابط');
+  const row = rows[0];
+  const statusLabels: Record<string, string> = {
+    pending: 'بانتظار الاعتماد',
+    approved: 'معتمد بانتظار الصرف',
+    rejected: 'مرفوض',
+    paid: 'مصروف',
+  };
+  return c.json({
+    ok: true,
+    type: 'expense',
+    fund_name: settings.fund_name,
+    document_no: row.payment_voucher_no || `EXP-${String(row.request_no).padStart(4, '0')}`,
+    amount: round2(row.amount),
+    date: row.disbursed_at ? String(row.disbursed_at).slice(0, 10) : null,
+    party: row.beneficiary_name,
+    document_label: EXPENSE_CATEGORY_LABELS[row.category] ?? 'سند صرف',
+    status: statusLabels[row.status] ?? row.status,
+    signed_by_name: row.signed_by_name,
+    signed_at: row.signed_at,
+    signature_present: Boolean(row.signed_by_name),
+    verified_at: new Date().toISOString(),
+  });
+});
 
 app.get('/logo', async (c) => {
   const settings = await getSettings();
@@ -978,16 +1280,24 @@ app.get('/files/:name', async (c) => {
     where attachment_url = ${name} limit 1`;
   const expenseFiles = await sql`select id from fund_expense_requests
     where attachment_url = ${name} limit 1`;
-  if (!receiptFiles.length && !expenseFiles.length) {
+  const attachmentFiles = await sql`select a.entity_type, a.entity_id, r.member_id
+    from fund_attachments a
+    left join fund_receipts r on a.entity_type = 'receipt' and r.id = a.entity_id
+    where a.file_name = ${name}`;
+  const hasReceipt = receiptFiles.length > 0 || attachmentFiles.some((row: any) => row.entity_type === 'receipt');
+  const hasExpense = expenseFiles.length > 0 || attachmentFiles.some((row: any) => row.entity_type === 'expense');
+  if (!hasReceipt && !hasExpense) {
     throw new HttpError(404, 'لم يتم العثور على الملف');
   }
   if (user.role === 'member') {
-    const owned = receiptFiles.length > 0 && receiptFiles[0].member_id === user.linked_member_id;
+    const owned =
+      (receiptFiles.length > 0 && receiptFiles[0].member_id === user.linked_member_id) ||
+      attachmentFiles.some((row: any) => row.entity_type === 'receipt' && row.member_id === user.linked_member_id);
     if (!owned) throw new HttpError(403, 'لا تملك صلاحية الوصول إلى هذا الملف');
   } else {
     const allowed =
-      (receiptFiles.length > 0 && Boolean(user.permissions['receipts.view'])) ||
-      (expenseFiles.length > 0 && Boolean(user.permissions['expenses.view'])) ||
+      (hasReceipt && Boolean(user.permissions['receipts.view'])) ||
+      (hasExpense && Boolean(user.permissions['expenses.view'])) ||
       Boolean(user.permissions['settings.manage']);
     if (!allowed) throw new HttpError(403, 'لا تملك صلاحية الوصول إلى هذا الملف');
   }
@@ -997,6 +1307,54 @@ app.get('/files/:name', async (c) => {
 app.get('/auth/me', async (c) => {
   const user = await requireUser(c);
   return c.json(authPayload(user, await publicSettings()));
+});
+
+app.post('/auth/login-phone', async (c) => {
+  const forwarded = c.req.header('x-forwarded-for') ?? '';
+  const ip = forwarded.split(',')[0].trim() || c.req.header('cf-connecting-ip') || 'unknown';
+  await rateLimit(`login-phone:${ip}`, 10, 60);
+  const body = await c.req.json().catch(() => ({}));
+  const digits = phoneDigits(body?.phone);
+  const password = String(body?.password ?? '');
+  if (digits.length < 6 || digits.length > 15 || !password) {
+    throw new HttpError(401, 'رقم الهاتف أو كلمة المرور غير صحيحة');
+  }
+  const rows = await sql`select p.*, u.email
+    from fund_user_profiles p
+    join auth.users u on u.id = p.user_id
+    where p.phone_login_enabled = true
+      and public.normalize_phone(p.phone) = ${digits}
+    limit 2`;
+  if (rows.length !== 1) {
+    throw new HttpError(401, 'رقم الهاتف أو كلمة المرور غير صحيحة');
+  }
+  const profile = rows[0];
+  if (!profile.active) throw new HttpError(403, 'هذا الحساب موقوف. تواصل مع مدير النظام');
+  if (profile.approval_status === 'pending') {
+    throw new HttpError(403, 'حسابك بانتظار موافقة الإدارة. سيتم إشعارك بعد المراجعة.');
+  }
+  if (profile.approval_status === 'rejected') {
+    throw new HttpError(403, 'تم رفض طلب تسجيل حسابك. تواصل مع إدارة الصندوق.');
+  }
+  const authResponse = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+    method: 'POST',
+    headers: { apikey: ANON_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: profile.email, password }),
+  });
+  if (!authResponse.ok) {
+    throw new HttpError(401, 'رقم الهاتف أو كلمة المرور غير صحيحة');
+  }
+  const session = await authResponse.json();
+  return c.json({
+    session: {
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+      expires_in: session.expires_in,
+      expires_at: session.expires_at,
+      token_type: session.token_type,
+      user: session.user,
+    },
+  });
 });
 
 app.patch('/auth/me', async (c) => {
@@ -1123,6 +1481,7 @@ app.get('/dashboard', async (c) => {
   return c.json({
     restricted: false,
     position,
+    alerts: await buildAlerts(),
     arrears: {
       ...arrears,
       members_in_arrears: Number((await sql`select count(*) as count from (
@@ -1151,6 +1510,12 @@ app.get('/dashboard', async (c) => {
       expenses: expenseMap.get(month) ?? 0,
     })),
   });
+});
+
+app.get('/alerts', async (c) => {
+  const user = await requireUser(c);
+  requireCap(user, 'dashboard.view');
+  return c.json({ alerts: await buildAlerts() });
 });
 
 /* --------------------------------- Members -------------------------------- */
@@ -1335,6 +1700,53 @@ app.post('/members/import', async (c) => {
   return c.json(result, 201);
 });
 
+app.post('/members/bulk-delete', async (c) => {
+  const user = await requireUser(c);
+  requireCap(user, 'members.delete');
+  const body = await c.req.json();
+  const ids = Array.isArray(body?.ids)
+    ? [...new Set(body.ids.map((id: unknown) => String(id)).filter(Boolean))]
+    : [];
+  if (!ids.length) throw new HttpError(400, 'اختر عضواً واحداً على الأقل');
+  if (ids.length > 500) throw new HttpError(400, 'الحد الأقصى 500 عضو في العملية الواحدة');
+
+  const rows = await sql`select m.*,
+      (select count(*) from fund_receipts r where r.member_id = m.id) as receipts_count,
+      (select count(*) from fund_subscriptions s where s.member_id = m.id) as subscriptions_count
+    from fund_members m where m.id = any(${ids})`;
+  const eligible = rows.filter((row: any) =>
+    !Number(row.receipts_count) && !Number(row.subscriptions_count)
+  );
+  const blocked = rows.filter((row: any) =>
+    Number(row.receipts_count) || Number(row.subscriptions_count)
+  );
+  const found = new Set(rows.map((row: any) => row.id));
+  const missing = ids.filter((id) => !found.has(id));
+
+  if (eligible.length) {
+    await sql.begin(async (tx) => {
+      for (const row of eligible) {
+        await tx`delete from fund_members where id = ${row.id}`;
+      }
+      await audit(tx, user, 'حذف أعضاء محددين', 'member', null,
+        `حذف ${eligible.length} عضو: ${eligible.map((row: any) => `${row.full_name} (${row.member_no})`).join('، ')}`);
+    });
+  }
+
+  const errors = [
+    ...blocked.map((row: any) =>
+      `${row.full_name} (${row.member_no}): لديه سندات أو استحقاقات مسجلة، يمكن إيقاف عضويته بدلاً من الحذف`
+    ),
+    ...missing.map((id) => `العضو ${id}: غير موجود`),
+  ];
+  return c.json({
+    deleted: eligible.length,
+    blocked: blocked.length,
+    missing: missing.length,
+    errors,
+  });
+});
+
 /* ------------------------------ Subscriptions ----------------------------- */
 
 app.get('/subscriptions', async (c) => {
@@ -1414,7 +1826,7 @@ app.post('/subscriptions/generate', async (c) => {
     let skipped = 0;
     let total = 0;
     for (const month of months) {
-      const monthResult = await ensureDuesForMonth(tx, month, memberIds);
+      const monthResult = await ensureDuesForMonth(tx, month, memberIds, { ignoreExclusions: true });
       generated += monthResult.generated;
       skipped += monthResult.skipped;
       total = Math.max(total, monthResult.total);
@@ -1522,14 +1934,82 @@ app.delete('/subscriptions/:id', async (c) => {
   const id = c.req.param('id');
   const rows = await sql`select * from fund_subscriptions where id = ${id} limit 1`;
   if (!rows.length) throw new HttpError(404, 'الاستحقاق غير موجود');
+  const current = rows[0];
   const receipts = await sql`select 1 from fund_receipts where subscription_id = ${id} limit 1`;
-  if (receipts.length || Number(rows[0].paid_amount) > 0) {
+  if (receipts.length || Number(current.paid_amount) > 0) {
     throw new HttpError(409, 'لا يمكن حذف استحقاق عليه سندات قبض. احذف السندات أولاً.');
   }
-  await sql`delete from fund_subscriptions where id = ${id}`;
-  await audit(sql, user, 'حذف استحقاق شهري', 'subscription', id,
-    `حذف استحقاق ${hijriMonthLabel(hijriMonthKey(Number(rows[0].hijri_year), Number(rows[0].hijri_month)))}`);
+  const hijri = current.hijri_year && current.hijri_month
+    ? { year: Number(current.hijri_year), month: Number(current.hijri_month) }
+    : toHijri(current.due_month);
+  await sql.begin(async (tx) => {
+    // Tombstone the deleted month so ensureDuesForMonth() does not recreate it
+    // on the next dashboard/subscriptions load.
+    await tx`insert into fund_subscription_exclusions
+        (member_id, hijri_year, hijri_month, reason, created_by)
+      values (${current.member_id}, ${hijri.year}, ${hijri.month}, 'حذف يدوي للاستحقاق', ${user.id})
+      on conflict (member_id, hijri_year, hijri_month) do update
+        set reason = excluded.reason, created_by = excluded.created_by, created_at = now()`;
+    await tx`delete from fund_subscriptions where id = ${id}`;
+    await audit(tx, user, 'حذف استحقاق شهري', 'subscription', id,
+      `حذف استحقاق ${hijriMonthLabel(hijriMonthKey(hijri.year, hijri.month))} — العضو ${current.member_id}`);
+  });
   return c.json({ ok: true });
+});
+
+app.post('/subscriptions/bulk-delete', async (c) => {
+  const user = await requireUser(c);
+  requireCap(user, 'subscriptions.delete');
+  const body = await c.req.json();
+  const ids = Array.isArray(body?.ids)
+    ? [...new Set(body.ids.map((id: unknown) => String(id)).filter(Boolean))]
+    : [];
+  if (!ids.length) throw new HttpError(400, 'اختر استحقاقاً واحداً على الأقل');
+  if (ids.length > 500) throw new HttpError(400, 'الحد الأقصى 500 استحقاق في العملية الواحدة');
+
+  const rows = await sql`select s.*, m.full_name, m.member_no,
+      (select count(*) from fund_receipts r where r.subscription_id = s.id) as receipts_count
+    from fund_subscriptions s join fund_members m on m.id = s.member_id
+    where s.id = any(${ids})`;
+  const eligible = rows.filter((row: any) =>
+    !Number(row.receipts_count) && Number(row.paid_amount) <= 0
+  );
+  const blocked = rows.filter((row: any) =>
+    Number(row.receipts_count) > 0 || Number(row.paid_amount) > 0
+  );
+  const found = new Set(rows.map((row: any) => row.id));
+  const missing = ids.filter((id) => !found.has(id));
+
+  if (eligible.length) {
+    await sql.begin(async (tx) => {
+      for (const row of eligible) {
+        const hijri = row.hijri_year && row.hijri_month
+          ? { year: Number(row.hijri_year), month: Number(row.hijri_month) }
+          : toHijri(row.due_month);
+        await tx`insert into fund_subscription_exclusions
+            (member_id, hijri_year, hijri_month, reason, created_by)
+          values (${row.member_id}, ${hijri.year}, ${hijri.month}, 'حذف جماعي للاستحقاقات', ${user.id})
+          on conflict (member_id, hijri_year, hijri_month) do update
+            set reason = excluded.reason, created_by = excluded.created_by, created_at = now()`;
+        await tx`delete from fund_subscriptions where id = ${row.id}`;
+      }
+      await audit(tx, user, 'حذف استحقاقات محددة', 'subscription', null,
+        `حذف ${eligible.length} استحقاق: ${eligible.map((row: any) => `${row.full_name} (${row.member_no})`).join('، ')}`);
+    });
+  }
+
+  const errors = [
+    ...blocked.map((row: any) =>
+      `${row.full_name} (${row.member_no}): عليه سند قبض أو مبلغ مسدد، احذف السند أولاً`
+    ),
+    ...missing.map((id) => `الاستحقاق ${id}: غير موجود`),
+  ];
+  return c.json({
+    deleted: eligible.length,
+    blocked: blocked.length,
+    missing: missing.length,
+    errors,
+  });
 });
 
 /* --------------------------------- Receipts ------------------------------- */
@@ -1582,8 +2062,9 @@ app.get('/receipts', async (c) => {
     params
   );
 
+  const receipts = await withAttachments(sql, 'receipt', rows);
   return c.json({
-    receipts: rows,
+    receipts,
     summary: {
       count: rows.length,
       total: round2(rows.reduce((sum: number, row: any) => sum + Number(row.amount), 0)),
@@ -1618,6 +2099,7 @@ app.post('/receipts', async (c) => {
     : null;
   const notes = str(body?.notes, { name: 'ملاحظات', max: 1000 });
   const attachment = validFileName(body?.attachment_url);
+  const attachments = attachmentList(body?.attachments);
   let memberId = str(body?.member_id, { name: 'العضو', max: 60 });
   const subscriptionId = str(body?.subscription_id, { name: 'الاستحقاق', max: 60 });
   let donorName = str(body?.donor_name, { name: 'اسم المتبرع', max: 150 });
@@ -1650,6 +2132,7 @@ app.post('/receipts', async (c) => {
          payment_method, is_restricted, restricted_purpose, receipt_date, attachment_url, notes, created_by)
         values (${receiptId}, ${receiptNo}, 'subscription', ${memberId}, ${subscriptionId}, ${donorName},
          ${value}, ${paymentMethod}, false, null, ${receiptDate}, ${attachment}, ${notes}, ${user.id})`;
+      await insertAttachments(tx, 'receipt', receiptId, attachments, user);
       await audit(tx, user, 'تسجيل سند قبض اشتراك', 'receipt', receiptId,
         `سند REC-${String(receiptNo).padStart(4, '0')} — ${subscription.full_name} — ${monthLabel(subscription.due_month)} — ${value} ر.ي`);
       return receiptId;
@@ -1665,15 +2148,76 @@ app.post('/receipts', async (c) => {
   if (!donorName) throw new HttpError(400, 'اسم المتبرع أو الجهة مطلوب');
 
   const id = crypto.randomUUID();
-  const receiptNo = await nextSequence(sql, 'receipt');
-  await sql`insert into fund_receipts
-    (id, receipt_no, receipt_type, member_id, subscription_id, donor_name, amount,
-     payment_method, is_restricted, restricted_purpose, receipt_date, attachment_url, notes, created_by)
-    values (${id}, ${receiptNo}, ${receiptType}, ${memberId}, null, ${donorName}, ${value},
-     ${paymentMethod}, ${isRestricted}, ${restrictedPurpose}, ${receiptDate}, ${attachment}, ${notes}, ${user.id})`;
-  await audit(sql, user, 'تسجيل سند قبض', 'receipt', id,
-    `سند REC-${String(receiptNo).padStart(4, '0')} — ${receiptType === 'donation' ? 'تبرع' : 'إيراد آخر'} — ${donorName} — ${value} ر.ي${isRestricted ? ` (مخصص: ${restrictedPurpose})` : ''}`);
+  await sql.begin(async (tx) => {
+    const receiptNo = await nextSequence(tx, 'receipt');
+    await tx`insert into fund_receipts
+      (id, receipt_no, receipt_type, member_id, subscription_id, donor_name, amount,
+       payment_method, is_restricted, restricted_purpose, receipt_date, attachment_url, notes, created_by)
+      values (${id}, ${receiptNo}, ${receiptType}, ${memberId}, null, ${donorName}, ${value},
+       ${paymentMethod}, ${isRestricted}, ${restrictedPurpose}, ${receiptDate}, ${attachment}, ${notes}, ${user.id})`;
+    await insertAttachments(tx, 'receipt', id, attachments, user);
+    await audit(tx, user, 'تسجيل سند قبض', 'receipt', id,
+      `سند REC-${String(receiptNo).padStart(4, '0')} — ${receiptType === 'donation' ? 'تبرع' : 'إيراد آخر'} — ${donorName} — ${value} ر.ي${isRestricted ? ` (مخصص: ${restrictedPurpose})` : ''}`);
+  });
   return c.json({ receipt: await getReceipt(id) }, 201);
+});
+
+app.post('/receipts/import', async (c) => {
+  const user = await requireUser(c);
+  requireCap(user, 'receipts.add');
+  const body = await c.req.json();
+  const rows = Array.isArray(body?.receipts) ? body.receipts : [];
+  if (!rows.length) throw new HttpError(400, 'ملف الاستيراد لا يحتوي على سندات');
+  if (rows.length > 500) throw new HttpError(400, 'الحد الأقصى 500 سند في الاستيراد الواحد');
+  const result = { imported: 0, skipped: 0, errors: [] as string[] };
+
+  for (const [index, raw] of rows.entries()) {
+    try {
+      const receiptType = oneOf(raw?.receipt_type ?? 'donation', ['donation', 'other'], {
+        name: `نوع السند (صف ${index + 1})`,
+      });
+      if (String(raw?.receipt_type ?? '').toLowerCase() === 'subscription') {
+        throw new HttpError(400, 'سندات الاشتراكات لا تُستورد من Excel. استخدم صفحة الاستحقاقات لتسجيل السداد');
+      }
+      const value = amount(raw?.amount, { name: `المبلغ (صف ${index + 1})` });
+      const receiptDate = isoDate(raw?.receipt_date, { name: `تاريخ السند (صف ${index + 1})` });
+      const paymentMethod = oneOf(raw?.payment_method ?? 'cash', ['cash', 'bank_transfer'], {
+        name: `طريقة الدفع (صف ${index + 1})`,
+      });
+      const isRestricted = bool(raw?.is_restricted, false);
+      const restrictedPurpose = isRestricted
+        ? str(raw?.restricted_purpose, { name: `الغرض المخصص (صف ${index + 1})`, required: true, max: 250 })
+        : null;
+      const notes = str(raw?.notes, { name: `ملاحظات (صف ${index + 1})`, max: 1000 });
+      const attachments = attachmentList(raw?.attachments);
+      let memberId = str(raw?.member_id, { name: `العضو (صف ${index + 1})`, max: 60 });
+      let donorName = str(raw?.donor_name, { name: `اسم المتبرع (صف ${index + 1})`, max: 150 });
+      if (memberId) {
+        const memberRows = await sql`select * from fund_members where id = ${memberId} limit 1`;
+        if (!memberRows.length) throw new HttpError(400, 'العضو المحدد غير موجود');
+        if (!donorName) donorName = memberRows[0].full_name;
+      }
+      if (!donorName) throw new HttpError(400, 'اسم المتبرع أو الجهة مطلوب');
+      const id = crypto.randomUUID();
+      await sql.begin(async (tx) => {
+        const receiptNo = await nextSequence(tx, 'receipt');
+        await tx`insert into fund_receipts
+          (id, receipt_no, receipt_type, member_id, subscription_id, donor_name, amount,
+           payment_method, is_restricted, restricted_purpose, receipt_date, notes, created_by)
+          values (${id}, ${receiptNo}, ${receiptType}, ${memberId}, null, ${donorName}, ${value},
+           ${paymentMethod}, ${isRestricted}, ${restrictedPurpose}, ${receiptDate}, ${notes}, ${user.id})`;
+        await insertAttachments(tx, 'receipt', id, attachments, user);
+        await audit(tx, user, 'استيراد سند قبض', 'receipt', id,
+          `سند REC-${String(receiptNo).padStart(4, '0')} — ${receiptType === 'donation' ? 'تبرع' : 'إيراد آخر'} — ${donorName} — ${value} ر.ي`);
+      });
+      result.imported += 1;
+    } catch (error) {
+      result.errors.push(error instanceof HttpError ? `صف ${index + 1}: ${error.message}` : `صف ${index + 1}: بيانات غير صالحة`);
+    }
+  }
+  await audit(sql, user, 'استيراد سندات قبض من ملف', 'receipt', null,
+    `تم استيراد ${result.imported} سند — أخطاء ${result.errors.length}`);
+  return c.json(result, 201);
 });
 
 app.patch('/receipts/:id', async (c) => {
@@ -1704,6 +2248,10 @@ app.patch('/receipts/:id', async (c) => {
     : null;
   const notes = body?.notes !== undefined ? str(body.notes, { name: 'ملاحظات', max: 1000 }) : current.notes;
   const attachment = body?.attachment_url !== undefined ? validFileName(body.attachment_url) : current.attachment_url;
+  const attachments = attachmentList(body?.attachments);
+  const removedAttachmentIds = Array.isArray(body?.removed_attachment_ids)
+    ? body.removed_attachment_ids.map((id: unknown) => String(id)).filter(Boolean)
+    : [];
   const donorName = isSubscription
     ? current.donor_name
     : (str(body?.donor_name ?? current.donor_name, { name: 'اسم المتبرع', required: true, max: 150 }));
@@ -1713,6 +2261,11 @@ app.patch('/receipts/:id', async (c) => {
       payment_method = ${paymentMethod}, is_restricted = ${isRestricted},
       restricted_purpose = ${restrictedPurpose}, receipt_date = ${receiptDate},
       attachment_url = ${attachment}, notes = ${notes} where id = ${id}`;
+    if (removedAttachmentIds.length) {
+      await tx`delete from fund_attachments
+        where entity_type = 'receipt' and entity_id = ${id} and id = any(${removedAttachmentIds})`;
+    }
+    await insertAttachments(tx, 'receipt', id, attachments, user);
     if (isSubscription) {
       await tx`update fund_subscriptions set paid_amount = ${value}, status = 'paid'
         where id = ${current.subscription_id}`;
@@ -1730,7 +2283,8 @@ app.delete('/receipts/:id', async (c) => {
   const rows = await sql`select * from fund_receipts where id = ${id} limit 1`;
   if (!rows.length) throw new HttpError(404, 'السند غير موجود');
   const current = rows[0];
-  await sql.begin(async (tx) => {
+  const files = await sql.begin(async (tx) => {
+    const attachmentFiles = await deleteAttachmentsForEntity(tx, 'receipt', id);
     if (current.subscription_id) {
       await tx`update fund_subscriptions set paid_amount = 0, status = 'unpaid'
         where id = ${current.subscription_id}`;
@@ -1738,8 +2292,33 @@ app.delete('/receipts/:id', async (c) => {
     await tx`delete from fund_receipts where id = ${id}`;
     await audit(tx, user, 'حذف سند قبض', 'receipt', id,
       `حذف السند REC-${String(current.receipt_no).padStart(4, '0')} — المبلغ ${current.amount} ر.ي`);
+    return attachmentFiles;
   });
+  await deleteStorageObjects([...files, current.attachment_url].filter(Boolean));
   return c.json({ ok: true });
+});
+
+app.post('/receipts/:id/sign', async (c) => {
+  const user = await requireUser(c);
+  requireCap(user, 'receipts.print');
+  const id = c.req.param('id');
+  const body = await c.req.json();
+  const signedByName = str(body?.signed_by_name ?? user.full_name, {
+    name: 'اسم الموقّع', required: true, min: 3, max: 120,
+  });
+  const signatureData = body?.signature_data ? String(body.signature_data) : null;
+  if (signatureData && (!signatureData.startsWith('data:image/png;base64,') || signatureData.length > 500_000)) {
+    throw new HttpError(400, 'بيانات التوقيع غير صالحة');
+  }
+  const rows = await sql`select * from fund_receipts where id = ${id} limit 1`;
+  if (!rows.length) throw new HttpError(404, 'السند غير موجود');
+  await sql`update fund_receipts
+    set signed_by_name = ${signedByName}, signed_by_id = ${user.id},
+        signed_at = now(), signature_data = ${signatureData}
+    where id = ${id}`;
+  await audit(sql, user, 'توقيع إلكتروني لسند قبض', 'receipt', id,
+    `توقيع السند REC-${String(rows[0].receipt_no).padStart(4, '0')} بواسطة ${signedByName}`);
+  return c.json({ receipt: await getReceipt(id) });
 });
 
 /* --------------------------------- Expenses -------------------------------- */
@@ -1800,6 +2379,7 @@ app.get('/expenses', async (c) => {
     approvalMap.get(approval.request_id)!.push(approval);
   }
 
+  const attachmentMap = await attachmentsFor(sql, 'expense', ids);
   const summary = (await sql`select
       coalesce(sum(case when status = 'pending' then amount else 0 end), 0) as pending_total,
       coalesce(sum(case when status = 'pending' then 1 else 0 end), 0) as pending_count,
@@ -1812,7 +2392,11 @@ app.get('/expenses', async (c) => {
     from fund_expense_requests`)[0];
 
   return c.json({
-    expenses: rows.map((row: any) => ({ ...row, approvals: approvalMap.get(row.id) ?? [] })),
+    expenses: rows.map((row: any) => ({
+      ...row,
+      approvals: approvalMap.get(row.id) ?? [],
+      attachments: attachmentMap.get(row.id) ?? [],
+    })),
     summary: {
       ...summary,
       pending_total: round2(summary.pending_total),
@@ -1843,6 +2427,7 @@ app.post('/expenses', async (c) => {
   const value = amount(body?.amount, { name: 'مبلغ الصرف' });
   const requestedDate = isoDate(body?.requested_date, { name: 'تاريخ الطلب' });
   const attachment = validFileName(body?.attachment_url);
+  const attachments = attachmentList(body?.attachments);
   const notes = str(body?.notes, { name: 'ملاحظات', max: 1000 });
   const id = crypto.randomUUID();
 
@@ -1853,6 +2438,7 @@ app.post('/expenses', async (c) => {
        requested_date, status, approval_count, attachment_url, notes, created_by)
       values (${id}, ${requestNo}, ${category}, ${beneficiaryName}, ${beneficiaryPhone}, ${description},
        ${value}, ${requestedDate}, 'pending', 0, ${attachment}, ${notes}, ${user.id})`;
+    await insertAttachments(tx, 'expense', id, attachments, user);
     await audit(tx, user, 'إنشاء طلب صرف', 'expense_request', id,
       `طلب EXP-${String(requestNo).padStart(4, '0')} — ${beneficiaryName} — ${value} ر.ي — بانتظار اعتماد الأمين العام ثم مدير الصندوق`);
     await notifyRoles(tx, ['secretary_general', 'admin'], {
@@ -1911,6 +2497,10 @@ app.patch('/expenses/:id', async (c) => {
   const attachment = body?.attachment_url !== undefined
     ? validFileName(body.attachment_url)
     : current.attachment_url;
+  const attachments = attachmentList(body?.attachments);
+  const removedAttachmentIds = Array.isArray(body?.removed_attachment_ids)
+    ? body.removed_attachment_ids.map((id: unknown) => String(id)).filter(Boolean)
+    : [];
   const notes = body?.notes !== undefined ? str(body.notes, { name: 'ملاحظات', max: 1000 }) : current.notes;
   const status = current.status === 'rejected' ? 'pending' : current.status;
 
@@ -1921,6 +2511,11 @@ app.patch('/expenses/:id', async (c) => {
       attachment_url = ${attachment}, notes = ${notes}, status = ${status},
       approval_count = ${status === 'pending' ? 0 : current.approval_count}
       where id = ${id}`;
+    if (removedAttachmentIds.length) {
+      await tx`delete from fund_attachments
+        where entity_type = 'expense' and entity_id = ${id} and id = any(${removedAttachmentIds})`;
+    }
+    await insertAttachments(tx, 'expense', id, attachments, user);
     if (current.status === 'rejected') {
       await tx`delete from fund_expense_approvals where request_id = ${id}`;
     }
@@ -1941,11 +2536,14 @@ app.delete('/expenses/:id', async (c) => {
   if (current.created_by !== user.id && user.role !== 'admin') {
     throw new HttpError(403, 'لا يمكنك حذف طلب لم تقم بإنشائه');
   }
-  await sql.begin(async (tx) => {
+  const files = await sql.begin(async (tx) => {
+    const attachmentFiles = await deleteAttachmentsForEntity(tx, 'expense', id);
     await tx`delete from fund_expense_requests where id = ${id}`;
     await audit(tx, user, 'حذف طلب صرف', 'expense_request', id,
       `حذف طلب EXP-${String(current.request_no).padStart(4, '0')} — ${current.beneficiary_name} — ${current.amount} ر.ي`);
+    return attachmentFiles;
   });
+  await deleteStorageObjects([...files, current.attachment_url].filter(Boolean));
   return c.json({ ok: true });
 });
 
@@ -2121,6 +2719,32 @@ app.post('/expenses/:id/pay', async (c) => {
   return c.json({ expense: await getExpense(id), voucher_no: voucherNo });
 });
 
+app.post('/expenses/:id/sign', async (c) => {
+  const user = await requireUser(c);
+  requireCap(user, 'expenses.print');
+  const id = c.req.param('id');
+  const body = await c.req.json();
+  const signedByName = str(body?.signed_by_name ?? user.full_name, {
+    name: 'اسم الموقّع', required: true, min: 3, max: 120,
+  });
+  const signatureData = body?.signature_data ? String(body.signature_data) : null;
+  if (signatureData && (!signatureData.startsWith('data:image/png;base64,') || signatureData.length > 500_000)) {
+    throw new HttpError(400, 'بيانات التوقيع غير صالحة');
+  }
+  const rows = await sql`select * from fund_expense_requests where id = ${id} limit 1`;
+  if (!rows.length) throw new HttpError(404, 'طلب الصرف غير موجود');
+  if (rows[0].status !== 'paid') {
+    throw new HttpError(409, 'لا يمكن توقيع سند الصرف قبل اعتماده وصرفه');
+  }
+  await sql`update fund_expense_requests
+    set signed_by_name = ${signedByName}, signed_by_id = ${user.id},
+        signed_at = now(), signature_data = ${signatureData}
+    where id = ${id}`;
+  await audit(sql, user, 'توقيع إلكتروني لسند صرف', 'expense_request', id,
+    `توقيع سند الصرف ${rows[0].payment_voucher_no ?? `EXP-${String(rows[0].request_no).padStart(4, '0')}`} بواسطة ${signedByName}`);
+  return c.json({ expense: await getExpense(id) });
+});
+
 /* --------------------------------- Reports -------------------------------- */
 
 async function arrearsRows() {
@@ -2258,6 +2882,87 @@ app.get('/reports/summary', async (c) => {
   });
 });
 
+app.get('/reports/annual', async (c) => {
+  const user = await requireUser(c);
+  requireCap(user, 'reports.view');
+  const currentYear = Number(todayISO().slice(0, 4));
+  const year = intRange(c.req.query('year') ?? currentYear, 2000, 2100, { name: 'السنة' });
+  const start = `${year}-01-01`;
+  const end = `${year}-12-31`;
+  const previousStart = `${year - 1}-01-01`;
+  const previousEnd = `${year - 1}-12-31`;
+
+  const trend = await sql`select to_char(months.month, 'YYYY-MM') as month,
+      coalesce((select sum(r.amount) from fund_receipts r
+        where r.receipt_date >= months.month
+          and r.receipt_date < (months.month + interval '1 month')::date), 0) as receipts,
+      coalesce((select sum(e.amount) from fund_expense_requests e
+        where e.status = 'paid'
+          and (e.disbursed_at at time zone 'Asia/Aden')::date >= months.month
+          and (e.disbursed_at at time zone 'Asia/Aden')::date < (months.month + interval '1 month')::date), 0) as expenses
+    from generate_series(${start}::date, ${`${year}-12-01`}::date, interval '1 month') as months(month)
+    order by months.month asc`;
+
+  const totals = trend.reduce((acc: any, row: any) => ({
+    receipts: acc.receipts + Number(row.receipts),
+    expenses: acc.expenses + Number(row.expenses),
+  }), { receipts: 0, expenses: 0 });
+  const previous = (await sql`select
+      coalesce((select sum(amount) from fund_receipts
+        where receipt_date between ${previousStart} and ${previousEnd}), 0) as receipts,
+      coalesce((select sum(amount) from fund_expense_requests
+        where status = 'paid'
+          and (disbursed_at at time zone 'Asia/Aden')::date between ${previousStart} and ${previousEnd}), 0) as expenses`)[0];
+  const previousReceipts = round2(previous.receipts);
+  const previousExpenses = round2(previous.expenses);
+  const memberGrowth = await sql`select to_char(joined_on, 'YYYY-MM') as month, count(*) as count
+    from fund_members where joined_on between ${start} and ${end}
+    group by month order by month asc`;
+  const memberTotals = (await sql`select count(*) as total,
+      coalesce(sum(case when active then 1 else 0 end), 0) as active
+    from fund_members`)[0];
+  const dues = (await sql`select coalesce(sum(amount), 0) as accrued,
+      coalesce(sum(paid_amount), 0) as collected
+    from fund_subscriptions where due_month between ${start} and ${end}`)[0];
+  const collectionRate = Number(dues.accrued) > 0
+    ? round2((Number(dues.collected) / Number(dues.accrued)) * 100)
+    : 0;
+  const growth = (current: number, previousValue: number) =>
+    previousValue > 0 ? round2(((current - previousValue) / previousValue) * 100) : null;
+  const receipts = round2(totals.receipts);
+  const expenses = round2(totals.expenses);
+
+  return c.json({
+    year,
+    months: trend.map((row: any) => ({
+      month: row.month,
+      receipts: round2(row.receipts),
+      expenses: round2(row.expenses),
+      net: round2(Number(row.receipts) - Number(row.expenses)),
+    })),
+    totals: {
+      receipts,
+      expenses,
+      net: round2(receipts - expenses),
+      collection_rate: collectionRate,
+      active_members: Number(memberTotals.active ?? 0),
+      total_members: Number(memberTotals.total ?? 0),
+      new_members: memberGrowth.reduce((sum: number, row: any) => sum + Number(row.count), 0),
+    },
+    previous: {
+      receipts: previousReceipts,
+      expenses: previousExpenses,
+      net: round2(previousReceipts - previousExpenses),
+    },
+    growth: {
+      receipts: growth(receipts, previousReceipts),
+      expenses: growth(expenses, previousExpenses),
+      net: growth(receipts - expenses, previousReceipts - previousExpenses),
+    },
+    member_growth: memberGrowth.map((row: any) => ({ month: row.month, count: Number(row.count) })),
+  });
+});
+
 app.get('/reports/cash-ledger', async (c) => {
   const user = await requireUser(c);
   requireCap(user, 'reports.view');
@@ -2284,6 +2989,31 @@ app.get('/reports/arrears', async (c) => {
       members: totals.members,
     },
   });
+});
+
+app.post('/reminders/log', async (c) => {
+  const user = await requireUser(c);
+  if (!user.permissions['reports.view'] && !user.permissions['subscriptions.view']) {
+    throw new HttpError(403, 'لا تملك صلاحية تسجيل التذكيرات');
+  }
+  const body = await c.req.json();
+  const memberIds = Array.isArray(body?.member_ids)
+    ? [...new Set(body.member_ids.map((id: unknown) => String(id)).filter(Boolean))]
+    : [];
+  if (!memberIds.length) throw new HttpError(400, 'اختر عضواً واحداً على الأقل');
+  if (memberIds.length > 500) throw new HttpError(400, 'الحد الأقصى 500 عضو في العملية الواحدة');
+  const channel = oneOf(body?.channel, ['whatsapp', 'sms'], { name: 'قناة التذكير' });
+  const message = str(body?.message, { name: 'نص التذكير', required: true, max: 2000 });
+  const members = await sql`select id, full_name from fund_members where id = any(${memberIds})`;
+  await sql.begin(async (tx) => {
+    for (const member of members) {
+      await tx`insert into fund_reminder_logs (member_id, channel, message, sent_by)
+        values (${member.id}, ${channel}, ${message}, ${user.id})`;
+    }
+    await audit(tx, user, 'تسجيل تذكير متأخرات', 'reminder', null,
+      `تسجيل ${members.length} تذكير عبر ${channel === 'whatsapp' ? 'واتساب' : 'SMS'}`);
+  });
+  return c.json({ logged: members.length, channel }, 201);
 });
 
 app.get('/reports/donations', async (c) => {
@@ -2624,6 +3354,8 @@ app.post('/users', async (c) => {
   if (password.length < 8) throw new HttpError(400, 'كلمة المرور يجب أن تكون 8 أحرف على الأقل');
   const role = oneOf(body?.role ?? 'member', ROLES, { name: 'الدور' });
   const phone = str(body?.phone, { name: 'رقم الهاتف', max: 30 });
+  const phoneLoginEnabled = bool(body?.phone_login_enabled, false);
+  if (phoneLoginEnabled) await ensurePhoneLoginAvailable(phone);
   const linkedMemberId = str(body?.linked_member_id, { name: 'العضو المرتبط', max: 60 });
   if (linkedMemberId && !(await sql`select 1 from fund_members where id = ${linkedMemberId}`).length) {
     throw new HttpError(400, 'العضو المرتبط غير موجود');
@@ -2668,17 +3400,18 @@ app.post('/users', async (c) => {
     const profile = await tx`select 1 from fund_user_profiles where user_id = ${userId}`;
     if (profile.length) {
       await tx`update fund_user_profiles set role = ${role}, full_name = ${fullName}, phone = ${phone},
+        phone_login_enabled = ${phoneLoginEnabled},
         linked_member_id = ${linkedMemberId}, active = true, approval_status = 'approved',
         permissions = ${sql.json(permissions ?? {})},
         approved_at = now(), approved_by = ${user.id} where user_id = ${userId}`;
     } else {
       await tx`insert into fund_user_profiles
-        (user_id, full_name, email, phone, role, linked_member_id, active, approval_status, permissions, approved_at, approved_by)
-        values (${userId}, ${fullName}, ${email}, ${phone}, ${role}, ${linkedMemberId}, true,
+        (user_id, full_name, email, phone, phone_login_enabled, role, linked_member_id, active, approval_status, permissions, approved_at, approved_by)
+        values (${userId}, ${fullName}, ${email}, ${phone}, ${phoneLoginEnabled}, ${role}, ${linkedMemberId}, true,
           'approved', ${sql.json(permissions ?? {})}, now(), ${user.id})`;
     }
     await audit(tx, user, 'إنشاء حساب مستخدم', 'user', userId,
-      `إنشاء حساب ${fullName} (${email}) بدور ${ROLE_LABELS[role]}`);
+      `إنشاء حساب ${fullName} (${email}) بدور ${ROLE_LABELS[role]}${phoneLoginEnabled ? ' — الدخول بالهاتف مفعّل' : ''}`);
   });
 
   return c.json({ ok: true, user_id: userId }, 201);
@@ -2700,6 +3433,10 @@ app.patch('/users/:id', async (c) => {
   const role = body?.role === undefined ? profile.role : oneOf(body.role, ROLES, { name: 'الدور' });
   const active = body?.active === undefined ? Boolean(profile.active) : bool(body.active, true);
   const phone = body?.phone === undefined ? profile.phone : str(body.phone, { name: 'رقم الهاتف', max: 30 });
+  const phoneLoginEnabled = body?.phone_login_enabled === undefined
+    ? Boolean(profile.phone_login_enabled)
+    : bool(body.phone_login_enabled, false);
+  if (phoneLoginEnabled) await ensurePhoneLoginAvailable(phone, profile.user_id);
   const linkedMemberId = body?.linked_member_id === undefined
     ? profile.linked_member_id
     : str(body.linked_member_id, { name: 'العضو المرتبط', max: 60 });
@@ -2728,10 +3465,11 @@ app.patch('/users/:id', async (c) => {
 
   await sql.begin(async (tx) => {
     await tx`update fund_user_profiles set full_name = ${fullName}, role = ${role}, active = ${active},
-      phone = ${phone}, linked_member_id = ${linkedMemberId},
+      phone = ${phone}, phone_login_enabled = ${phoneLoginEnabled},
+      linked_member_id = ${linkedMemberId},
       permissions = ${sql.json(permissions)} where user_id = ${profile.user_id}`;
     await audit(tx, user, 'تعديل حساب مستخدم', 'user', profile.user_id,
-      `تحديث المستخدم ${fullName} — الدور: ${ROLE_LABELS[role]} — الحالة: ${active ? 'نشط' : 'موقوف'} — الصلاحيات: ${Object.entries(permissions).filter(([, value]) => value).length}`);
+      `تحديث المستخدم ${fullName} — الدور: ${ROLE_LABELS[role]} — الحالة: ${active ? 'نشط' : 'موقوف'} — الدخول بالهاتف: ${phoneLoginEnabled ? 'مفعّل' : 'معطّل'} — الصلاحيات: ${Object.entries(permissions).filter(([, value]) => value).length}`);
   });
 
   return c.json({ ok: true });
@@ -2745,6 +3483,8 @@ app.post('/users/:id/approve', async (c) => {
   const rows = await sql`select * from fund_user_profiles where user_id = ${id}`;
   if (!rows.length) throw new HttpError(404, 'المستخدم غير موجود');
   const role = oneOf(body?.role ?? 'member', ROLES, { name: 'الدور' });
+  const phoneLoginEnabled = bool(body?.phone_login_enabled, false);
+  if (phoneLoginEnabled) await ensurePhoneLoginAvailable(rows[0].phone);
   const linkedMemberId = str(body?.linked_member_id, { name: 'العضو المرتبط', max: 60 });
   if (linkedMemberId && !(await sql`select 1 from fund_members where id = ${linkedMemberId}`).length) {
     throw new HttpError(400, 'العضو المرتبط غير موجود');
@@ -2757,7 +3497,8 @@ app.post('/users/:id/approve', async (c) => {
   }
   await sql.begin(async (tx) => {
     await tx`update fund_user_profiles set active = true, approval_status = 'approved',
-      role = ${role}, linked_member_id = ${linkedMemberId}, permissions = ${sql.json(permissions)},
+      role = ${role}, phone_login_enabled = ${phoneLoginEnabled},
+      linked_member_id = ${linkedMemberId}, permissions = ${sql.json(permissions)},
       approved_at = now(), approved_by = ${user.id}
       where user_id = ${id}`;
     await notifyUsers(tx, [id], {
@@ -2858,6 +3599,18 @@ app.patch('/settings', async (c) => {
   const autoDues = body?.auto_dues_enabled === undefined
     ? Boolean(current.auto_dues_enabled)
     : bool(body.auto_dues_enabled, true);
+  const cashAlertThreshold = body?.cash_alert_threshold === undefined
+    ? Number(current.cash_alert_threshold ?? 0)
+    : amount(body.cash_alert_threshold, { name: 'حد التنبيه النقدي', min: 0 });
+  const commitmentAlertPercent = body?.commitment_alert_percent === undefined
+    ? Number(current.commitment_alert_percent ?? 80)
+    : intRange(body.commitment_alert_percent, 1, 100, { name: 'نسبة تنبيه الالتزامات' });
+  const approvalAlertDays = body?.approval_alert_days === undefined
+    ? Number(current.approval_alert_days ?? 3)
+    : intRange(body.approval_alert_days, 1, 30, { name: 'أيام تنبيه الاعتماد' });
+  const reminderDay = body?.reminder_day === undefined
+    ? Number(current.reminder_day ?? 25)
+    : intRange(body.reminder_day, 1, 31, { name: 'يوم تذكير نهاية الشهر' });
 
   let logoFile = current.logo_url;
   if (body?.logo_file === null || body?.logo_file === '') {
@@ -2873,10 +3626,13 @@ app.patch('/settings', async (c) => {
     await tx`update fund_settings set fund_name = ${fundName}, logo_url = ${logoFile},
       default_monthly_fee = ${defaultFee}, currency = ${currency}, opening_balance = ${openingBalance},
       allow_self_approval_demo = ${selfApproval}, allow_signups = ${allowSignups},
-      auto_dues_enabled = ${autoDues}, updated_at = now()
+      auto_dues_enabled = ${autoDues}, cash_alert_threshold = ${cashAlertThreshold},
+      commitment_alert_percent = ${commitmentAlertPercent},
+      approval_alert_days = ${approvalAlertDays}, reminder_day = ${reminderDay},
+      updated_at = now()
       where id = 'fund'`;
     await audit(tx, user, 'تحديث إعدادات الصندوق', 'settings', 'fund',
-      `الاسم: ${fundName} — الاشتراك: ${defaultFee} — الرصيد الافتتاحي: ${openingBalance} — الاستحقاقات التلقائية: ${autoDues ? 'مفعلة' : 'معطلة'}`);
+      `الاسم: ${fundName} — الاشتراك: ${defaultFee} — الرصيد الافتتاحي: ${openingBalance} — الاستحقاقات التلقائية: ${autoDues ? 'مفعلة' : 'معطلة'} — تنبيهات: نقدي ${cashAlertThreshold}، التزامات ${commitmentAlertPercent}%، اعتماد ${approvalAlertDays} أيام، تذكير يوم ${reminderDay}`);
   });
 
   return c.json({ settings: protocolSettings(await getSettings()) });
@@ -2941,6 +3697,20 @@ app.post('/uploads/logo', async (c) => {
   const file = form.get('file');
   if (!(file instanceof File)) throw new HttpError(400, 'لم يتم اختيار ملف الشعار');
   return c.json(await uploadToStorage(file, 'logo'), 201);
+});
+
+app.delete('/attachments/:id', async (c) => {
+  const user = await requireUser(c);
+  const id = c.req.param('id');
+  const rows = await sql`select * from fund_attachments where id = ${id} limit 1`;
+  if (!rows.length) throw new HttpError(404, 'المرفق غير موجود');
+  const attachment = rows[0];
+  requireCap(user, attachment.entity_type === 'receipt' ? 'receipts.edit' : 'expenses.edit');
+  await sql`delete from fund_attachments where id = ${id}`;
+  await deleteStorageObjects([attachment.file_name]);
+  await audit(sql, user, 'حذف مرفق', attachment.entity_type === 'receipt' ? 'receipt' : 'expense_request',
+    attachment.entity_id, `حذف المرفق ${attachment.original_name ?? attachment.file_name}`);
+  return c.json({ ok: true });
 });
 
 /* ------------------------------- Notifications ----------------------------- */
@@ -3061,10 +3831,13 @@ function quoteIdent(value: string) {
 const RESTORE_ORDER = [
   'fund_settings',
   'fund_members',
+  'fund_subscription_exclusions',
   'fund_subscriptions',
   'fund_receipts',
   'fund_expense_requests',
   'fund_expense_approvals',
+  'fund_attachments',
+  'fund_reminder_logs',
   'sequences',
   'fund_audit_logs',
 ];
@@ -3103,7 +3876,7 @@ async function restoreSnapshot(payload: any, user: any) {
   const authIds = new Set(authRows.map((row: any) => row.id));
   const sanitize = (table: string, rows: any[]) => rows.map((row) => {
     const copy = { ...row };
-    for (const key of ['created_by', 'disbursed_by', 'approved_by']) {
+    for (const key of ['created_by', 'disbursed_by', 'approved_by', 'uploaded_by', 'sent_by', 'signed_by_id']) {
       if (copy[key] && !authIds.has(copy[key])) copy[key] = null;
     }
     if (table === 'fund_members' && copy.linked_member_id) delete copy.linked_member_id;
@@ -3113,9 +3886,12 @@ async function restoreSnapshot(payload: any, user: any) {
   const restored: Record<string, number> = {};
   await sql.begin(async (tx) => {
     await tx`truncate table public.fund_audit_logs restart identity`;
+    await tx`delete from public.fund_attachments`;
+    await tx`delete from public.fund_reminder_logs`;
     await tx`delete from public.fund_expense_approvals`;
     await tx`delete from public.fund_receipts`;
     await tx`delete from public.fund_subscriptions`;
+    await tx`delete from public.fund_subscription_exclusions`;
     await tx`delete from public.fund_expense_requests`;
     await tx`update public.fund_user_profiles set linked_member_id = null where linked_member_id is not null`;
     await tx`delete from public.fund_members`;

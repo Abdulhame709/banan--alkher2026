@@ -224,6 +224,27 @@ export function DashboardPage() {
         <div className="banner-pattern" aria-hidden="true" />
       </section>
 
+      {dashboard.alerts && dashboard.alerts.length > 0 && (
+        <section className="smart-alerts">
+          <div className="smart-alerts-head">
+            <span><AlertCircle size={18} /> تنبيهات ذكية</span>
+            <small>تُحدّث تلقائياً حسب إعدادات الحدود والمدة</small>
+          </div>
+          <div className="smart-alerts-grid">
+            {dashboard.alerts.map((alert) => (
+              <Link key={alert.id} to={alert.link} className={`smart-alert smart-alert-${alert.severity}`}>
+                <span className="smart-alert-dot" />
+                <div>
+                  <strong>{alert.title}</strong>
+                  <p>{alert.message}</p>
+                </div>
+                <ArrowLeft size={16} />
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section className="stats-grid">
         <StatCard
           label="الرصيد النقدي الفعلي"

@@ -17,7 +17,7 @@ interface AuthContextValue {
   capabilities: Capabilities | null;
   settings: PublicSettings | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (identifier: string, password: string) => Promise<void>;
   signup: (data: {
     full_name: string;
     email: string;
@@ -128,9 +128,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [clear]);
 
   const login = useCallback(
-    async (email: string, password: string) => {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) throw new ApiError(friendlyAuthError(error.message), 401);
+    async (identifier: string, password: string) => {
+      const value = identifier.trim();
+      if (value.includes('@')) {
+        const { error } = await supabase.auth.signInWithPassword({ email: value, password });
+        if (error) throw new ApiError(friendlyAuthError(error.message), 401);
+      } else {
+        const digits = value.replace(/\D/g, '');
+        if (digits.length < 6) {
+          throw new ApiError('أدخل بريداً إلكترونياً صالحاً أو رقم هاتف مسجلاً', 400);
+        }
+        const result = await api.post<{
+          session: { access_token: string; refresh_token: string };
+        }>('/auth/login-phone', { phone: digits, password });
+        const { error } = await supabase.auth.setSession({
+          access_token: result.session.access_token,
+          refresh_token: result.session.refresh_token,
+        });
+        if (error) throw new ApiError(friendlyAuthError(error.message), 401);
+      }
       const { data: sessionData } = await supabase.auth.getSession();
       setAccessToken(sessionData.session?.access_token ?? null);
       try {

@@ -2,9 +2,9 @@ name: Keep-alive and monthly dues
 
 on:
   schedule:
-    # Twice a day so a delayed GitHub run never leaves the database idle for a week.
-    - cron: '17 3 * * *'
-    - cron: '17 15 * * *'
+    # Four times a day. GitHub may delay scheduled jobs, so the external
+    # uptime monitor documented in docs/التشغيل-الدائم.md is still recommended.
+    - cron: '17 */6 * * *'
   workflow_dispatch:
 
 permissions:
@@ -14,7 +14,7 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Wake database
+      - name: Wake database through Edge Function
         env:
           API_BASE: ${{ secrets.VITE_API_BASE_URL }}
         run: |
@@ -22,7 +22,24 @@ jobs:
           curl --fail --silent --show-error --retry 3 --retry-delay 5 "$API_BASE/health?db=1"
           echo "Database is awake."
 
-      - name: Post current Hijri month dues
+      - name: Touch database through REST RPC
+        env:
+          SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "Supabase URL or anon key secret is missing"
+            exit 1
+          fi
+          curl --fail --silent --show-error --retry 3 --retry-delay 5 \
+            -X POST "$SUPABASE_URL/rest/v1/rpc/ping_keepalive" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}'
+          echo "Keep-alive heartbeat recorded."
+
+      - name: Post current Hijri month dues and month-end reminder
         env:
           API_BASE: ${{ secrets.VITE_API_BASE_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}

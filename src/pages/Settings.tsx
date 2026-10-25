@@ -46,6 +46,10 @@ export function SettingsPage() {
     opening_balance: '0',
     allow_signups: true,
     auto_dues_enabled: true,
+    cash_alert_threshold: '0',
+    commitment_alert_percent: '80',
+    approval_alert_days: '3',
+    reminder_day: '25',
   });
 
   async function load() {
@@ -62,6 +66,10 @@ export function SettingsPage() {
         opening_balance: String(payload.settings.opening_balance),
         allow_signups: Boolean(payload.settings.allow_signups),
         auto_dues_enabled: payload.settings.auto_dues_enabled !== false,
+        cash_alert_threshold: String(payload.settings.cash_alert_threshold ?? 0),
+        commitment_alert_percent: String(payload.settings.commitment_alert_percent ?? 80),
+        approval_alert_days: String(payload.settings.approval_alert_days ?? 3),
+        reminder_day: String(payload.settings.reminder_day ?? 25),
       });
     } catch (loadError) {
       setError(apiErrorMessage(loadError));
@@ -92,6 +100,10 @@ export function SettingsPage() {
         opening_balance: parseAmount(form.opening_balance),
         allow_signups: form.allow_signups,
         auto_dues_enabled: form.auto_dues_enabled,
+        cash_alert_threshold: parseAmount(form.cash_alert_threshold),
+        commitment_alert_percent: Number(form.commitment_alert_percent) || 0,
+        approval_alert_days: Number(form.approval_alert_days) || 1,
+        reminder_day: Number(form.reminder_day) || 25,
       });
       setSettings(payload.settings);
       toast.success('تم حفظ إعدادات الصندوق بنجاح');
@@ -238,6 +250,51 @@ export function SettingsPage() {
             </div>
             <Alert tone="success" title="اعتماد مزدوج إلزامي">
               لا يمكن لمنشئ طلب الصرف اعتماده بنفسه، ولا يمكن للشخص نفسه اعتماد المرحلتين. هذا الإجراء ثابت في النظام ولا يمكن تجاوزه من الإعدادات.
+            </Alert>
+          </Card>
+
+          <Card>
+            <CardHeader title="التنبيهات الذكية والتذكيرات" subtitle="حدود الإنذار المبكر وموعد تذكير المتأخرين" icon={<SlidersHorizontal size={19} />} />
+            <div className="form-grid two">
+              <Field label="حد الرصيد المنخفض (ر.ي)" hint="ينبّه عند نزول الرصيد النقدي إلى هذا الحد أو أقل — صفر لتعطيل التنبيه">
+                <AmountInput
+                  value={form.cash_alert_threshold}
+                  onChange={(value) => setForm((current) => ({ ...current, cash_alert_threshold: value }))}
+                />
+              </Field>
+              <Field label="نسبة الالتزامات من الرصيد (%)" hint="ينبّه عند تجاوز الطلبات المعتمدة غير المصروفة هذه النسبة">
+                <TextInput
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={form.commitment_alert_percent}
+                  onChange={(event) => setForm((current) => ({ ...current, commitment_alert_percent: event.target.value }))}
+                  dir="ltr"
+                />
+              </Field>
+              <Field label="أيام تأخر الاعتماد" hint="ينبّه عند بقاء طلب صرف دون اعتماد كامل لهذه المدة">
+                <TextInput
+                  type="number"
+                  min={1}
+                  max={60}
+                  value={form.approval_alert_days}
+                  onChange={(event) => setForm((current) => ({ ...current, approval_alert_days: event.target.value }))}
+                  dir="ltr"
+                />
+              </Field>
+              <Field label="يوم التذكير الشهري" hint="يوم الشهر الهجري لإرسال تذكير المتأخرات قبل نهاية الشهر">
+                <TextInput
+                  type="number"
+                  min={20}
+                  max={29}
+                  value={form.reminder_day}
+                  onChange={(event) => setForm((current) => ({ ...current, reminder_day: event.target.value }))}
+                  dir="ltr"
+                />
+              </Field>
+            </div>
+            <Alert tone="info">
+              تظهر هذه التنبيهات في لوحة التحكم. التذكيرات تُنشئ روابط واتساب ورسائل SMS جاهزة، ويُسجل إرسالها في سجل التذكيرات.
             </Alert>
           </Card>
 

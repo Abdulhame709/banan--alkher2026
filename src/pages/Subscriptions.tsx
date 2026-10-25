@@ -62,6 +62,8 @@ export function SubscriptionsPage() {
   );
   const [search, setSearch] = useState('');
   const [rows, setRows] = useState<Subscription[]>([]);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [summary, setSummary] = useState<SubscriptionSummary>({ count: 0, total: 0, paid: 0, remaining: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -106,6 +108,7 @@ export function SubscriptionsPage() {
         month: string;
       }>(`/subscriptions?${params.toString()}`);
       setRows(payload.subscriptions);
+      setSelected((current) => current.filter((id) => payload.subscriptions.some((row) => row.id === id)));
       setSummary(payload.summary);
     } catch (loadError) {
       setError(apiErrorMessage(loadError));
@@ -254,6 +257,40 @@ export function SubscriptionsPage() {
     }
   }
 
+  function toggleSelected(id: string) {
+    setSelected((current) =>
+      current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
+    );
+  }
+
+  function toggleAllSelected() {
+    setSelected((current) =>
+      current.length === rows.length ? [] : rows.map((row) => row.id)
+    );
+  }
+
+  async function bulkDeleteDues() {
+    if (!selected.length) return;
+    if (!window.confirm(`هل تريد حذف ${formatNumber(selected.length)} استحقاق محدد؟ سيتم منع حذف الاستحقاقات المسددة أو المرتبطة بسندات.`)) return;
+    setBulkDeleting(true);
+    try {
+      const result = await api.post<{ deleted: number; blocked: number; missing: number; errors: string[] }>(
+        '/subscriptions/bulk-delete',
+        { ids: selected }
+      );
+      toast.success(`تم حذف ${formatNumber(result.deleted)} استحقاق`);
+      if (result.blocked || result.missing) {
+        toast.error(result.errors[0] ?? `تعذر حذف ${formatNumber(result.blocked + result.missing)} استحقاق`);
+      }
+      setSelected([]);
+      await load(false);
+    } catch (deleteError) {
+      toast.error(apiErrorMessage(deleteError));
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
   function toggleMember(id: string) {
     setSelectedMemberIds((current) => current.includes(id)
       ? current.filter((item) => item !== id)
@@ -343,6 +380,15 @@ export function SubscriptionsPage() {
               { value: 'paid', label: 'مسدد' },
             ]}
           />
+          {capabilities?.deleteSubscriptions && selected.length > 0 && (
+            <div className="selection-actions">
+              <span>تم اختيار {formatNumber(selected.length)}</span>
+              <Button variant="danger" size="sm" icon={<Trash2 size={15} />} loading={bulkDeleting} onClick={bulkDeleteDues}>
+                حذف المحدد
+              </Button>
+              <button type="button" className="text-button" onClick={() => setSelected([])}>إلغاء</button>
+            </div>
+          )}
         </div>
 
         {loading ? (
@@ -363,6 +409,16 @@ export function SubscriptionsPage() {
             <table className="data-table responsive-table">
               <thead>
                 <tr>
+                  {capabilities?.deleteSubscriptions && (
+                    <th className="checkbox-cell">
+                      <input
+                        type="checkbox"
+                        checked={rows.length > 0 && selected.length === rows.length}
+                        onChange={toggleAllSelected}
+                        aria-label="تحديد جميع الاستحقاقات"
+                      />
+                    </th>
+                  )}
                   <th>العضو</th>
                   <th>الشهر الهجري</th>
                   <th>المستحق</th>
@@ -380,7 +436,17 @@ export function SubscriptionsPage() {
                     ? hijriMonthLabel(hijriMonthKey(row.hijri_year, row.hijri_month))
                     : monthText;
                   return (
-                    <tr key={row.id}>
+                    <tr key={row.id} className={selected.includes(row.id) ? 'row-selected' : undefined}>
+                      {capabilities?.deleteSubscriptions && (
+                        <td className="checkbox-cell" data-label="تحديد">
+                          <input
+                            type="checkbox"
+                            checked={selected.includes(row.id)}
+                            onChange={() => toggleSelected(row.id)}
+                            aria-label={`تحديد استحقاق ${row.full_name}`}
+                          />
+                        </td>
+                      )}
                       <td data-label="العضو">
                         <div className="person-cell">
                           <span className="avatar avatar-xs">{(row.full_name ?? '?').charAt(0)}</span>

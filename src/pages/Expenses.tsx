@@ -10,7 +10,7 @@ import {
   Edit3,
   FileText,
   HandCoins,
-  Paperclip,
+  PenLine,
   Plus,
   Printer,
   ShieldCheck,
@@ -20,7 +20,7 @@ import {
   Wallet,
   XCircle,
 } from 'lucide-react';
-import { api, apiErrorMessage, fileUrl } from '../lib/api';
+import { api, apiErrorMessage } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useRealtimeVersion } from '../lib/realtime';
 import { useToast } from '../lib/toast';
@@ -51,11 +51,13 @@ import {
   TextInput,
   Textarea,
 } from '../components/ui';
-import { FileUpload } from '../components/FileUpload';
+import { MultiFileUpload } from '../components/MultiFileUpload';
+import { AttachmentLinks } from '../components/AttachmentLinks';
+import { SignatureModal } from '../components/SignaturePad';
 import { AmountInput, parseAmount } from '../components/AmountInput';
 import { HijriDateInput } from '../components/HijriInputs';
 import { PaymentVoucher } from '../components/PrintSheet';
-import type { Expense, ExpenseApproval } from '../types';
+import type { Attachment, Expense, ExpenseApproval, UploadedAttachment } from '../types';
 
 interface ExpensesSummary {
   pending_total: number;
@@ -82,6 +84,7 @@ const emptyForm = {
   requested_date: todayISO(),
   notes: '',
   attachment_url: null as string | null,
+  attachments: [] as UploadedAttachment[],
 };
 
 export function ExpensesPage() {
@@ -121,8 +124,12 @@ export function ExpensesPage() {
   const [printExpense, setPrintExpense] = useState<Expense | null>(null);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [editForm, setEditForm] = useState(emptyForm);
+  const [existingAttachments, setExistingAttachments] = useState<Attachment[]>([]);
+  const [removedAttachmentIds, setRemovedAttachmentIds] = useState<string[]>([]);
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState('');
+  const [signingExpense, setSigningExpense] = useState<Expense | null>(null);
+  const [savingSignature, setSavingSignature] = useState(false);
 
   async function load(showSpinner = true) {
     if (showSpinner) setLoading(true);
@@ -188,6 +195,7 @@ export function ExpensesPage() {
         requested_date: form.requested_date,
         notes: form.notes.trim() || null,
         attachment_url: form.attachment_url,
+        attachments: form.attachments,
       });
       toast.success('تم إنشاء طلب الصرف. بانتظار اعتماد الأمين العام ثم مدير الصندوق');
       setCreateOpen(false);
@@ -285,7 +293,10 @@ export function ExpensesPage() {
       requested_date: expense.requested_date,
       notes: expense.notes ?? '',
       attachment_url: expense.attachment_url ?? null,
+      attachments: [],
     });
+    setExistingAttachments(expense.attachments ?? []);
+    setRemovedAttachmentIds([]);
     setEditError('');
   }
 
@@ -309,6 +320,8 @@ export function ExpensesPage() {
         requested_date: editForm.requested_date,
         notes: editForm.notes.trim() || null,
         attachment_url: editForm.attachment_url,
+        attachments: editForm.attachments,
+        removed_attachment_ids: removedAttachmentIds,
       });
       toast.success('تم تحديث طلب الصرف');
       setEditingExpense(null);
@@ -328,6 +341,22 @@ export function ExpensesPage() {
       await load(false);
     } catch (deleteError) {
       toast.error(apiErrorMessage(deleteError));
+    }
+  }
+
+  async function signExpense(data: { signed_by_name: string; signature_data: string }) {
+    if (!signingExpense) return;
+    setSavingSignature(true);
+    try {
+      const payload = await api.post<{ expense: Expense }>(`/expenses/${signingExpense.id}/sign`, data);
+      toast.success('تم حفظ التوقيع الإلكتروني لسند الصرف');
+      setSigningExpense(null);
+      setPrintExpense((current) => current?.id === payload.expense.id ? payload.expense : current);
+      await load(false);
+    } catch (signError) {
+      toast.error(apiErrorMessage(signError));
+    } finally {
+      setSavingSignature(false);
     }
   }
 
@@ -464,12 +493,6 @@ export function ExpensesPage() {
                     <p>{expense.description}</p>
                   </div>
 
-                  {expense.attachment_url && (
-                    <a className="expense-attachment" href={fileUrl(expense.attachment_url)} target="_blank" rel="noreferrer">
-                      <Paperclip size={15} /> عرض المستند الداعم
-                    </a>
-                  )}
-
                   <div className="approval-tracker">
                     <div className="track-step done">
                       <span className="track-node"><UserCheck size={15} /></span>
@@ -517,6 +540,12 @@ export function ExpensesPage() {
 
                   {expense.notes && <p className="expense-notes">ملاحظات: {expense.notes}</p>}
 
+                  {(expense.attachments?.length || expense.attachment_url) ? (
+                    <div className="expense-attachments">
+                      <AttachmentLinks attachments={expense.attachments} legacyUrl={expense.attachment_url} />
+                    </div>
+                  ) : null}
+
                   <footer className="expense-card-foot">
                     {expense.status === 'pending' && (
                       <>
@@ -557,6 +586,11 @@ export function ExpensesPage() {
                         <Button size="sm" variant="secondary" icon={<Printer size={15} />} onClick={() => setPrintExpense(expense)}>
                           طباعة سند الصرف
                         </Button>
+                        {capabilities?.printExpenses && (
+                          <Button size="sm" variant="soft" icon={<PenLine size={15} />} onClick={() => setSigningExpense(expense)}>
+                            {expense.signed_by_name ? 'تحديث التوقيع' : 'توقيع إلكتروني'}
+                          </Button>
+                        )}
                         <span className="expense-hint"><BadgeCheck size={15} /> صُرف بواسطة {expense.disbursed_by_name ?? '—'}</span>
                       </div>
                     )}
@@ -662,11 +696,11 @@ export function ExpensesPage() {
                 required
               />
             </Field>
-            <FileUpload
-              value={form.attachment_url}
-              onChange={(file) => setForm((current) => ({ ...current, attachment_url: file }))}
-              label="مستند داعم (اختياري)"
-              hint="تقرير طبي، بحث اجتماعي، عرض سعر… صورة أو PDF بحد أقصى 8 ميجابايت"
+            <MultiFileUpload
+              value={form.attachments}
+              onChange={(attachments) => setForm((current) => ({ ...current, attachments }))}
+              label="مستندات داعمة (اختياري)"
+              hint="تقرير طبي، بحث اجتماعي، عرض سعر… حتى 10 ملفات، والحد الأقصى 8 ميجابايت للملف"
             />
             <Alert tone="info">
               سيُسجل الطلب باسمك، ولا يمكنك اعتماده بنفسك. يعتمده الأمين العام أولاً ثم مدير الصندوق،
@@ -745,10 +779,16 @@ export function ExpensesPage() {
                 required
               />
             </Field>
-            <FileUpload
-              value={editForm.attachment_url}
-              onChange={(file) => setEditForm((current) => ({ ...current, attachment_url: file }))}
-              label="مستند داعم (اختياري)"
+            <MultiFileUpload
+              value={editForm.attachments}
+              onChange={(attachments) => setEditForm((current) => ({ ...current, attachments }))}
+              existing={existingAttachments}
+              onRemoveExisting={(attachment) => {
+                setExistingAttachments((current) => current.filter((item) => item.id !== attachment.id));
+                setRemovedAttachmentIds((current) => [...current, attachment.id]);
+              }}
+              label="مستندات داعمة"
+              hint="أضف مستندات جديدة أو احذف مرفقاً موجوداً، ثم احفظ التعديلات."
             />
           </form>
         </Modal>
@@ -858,6 +898,17 @@ export function ExpensesPage() {
             </Alert>
           </div>
         </Modal>
+      )}
+
+      {signingExpense && (
+        <SignatureModal
+          title="توقيع سند الصرف إلكترونياً"
+          subtitle={`${refExpense(signingExpense.request_no)} — ${money(signingExpense.amount)}`}
+          defaultName={signingExpense.signed_by_name ?? ''}
+          saving={savingSignature}
+          onSave={signExpense}
+          onClose={() => setSigningExpense(null)}
+        />
       )}
 
       {printExpense && <PaymentVoucher expense={printExpense} onClose={() => setPrintExpense(null)} />}

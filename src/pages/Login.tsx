@@ -247,18 +247,18 @@ export function LoginPage() {
             )}
 
             {mode === 'login' && (
-              <Field label="البريد الإلكتروني" required>
+              <Field label="البريد الإلكتروني أو رقم الهاتف" required>
                 <div className="input-with-icon">
                   <Mail size={17} />
                   <input
                     className="input"
-                    type="email"
+                    type="text"
                     value={form.email}
                     onChange={(event) => update('email', event.target.value)}
-                    placeholder="name@example.com"
+                    placeholder="name@example.com أو 7xxxxxxxx"
                     required
                     dir="ltr"
-                    autoComplete="email"
+                    autoComplete="username"
                   />
                 </div>
               </Field>

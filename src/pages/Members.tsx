@@ -66,6 +66,8 @@ export function MembersPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const [members, setMembers] = useState<Member[]>([]);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('active');
   const [loading, setLoading] = useState(true);
@@ -93,6 +95,7 @@ export function MembersPage() {
       if (status !== 'all') params.set('status', status);
       const payload = await api.get<{ members: Member[] }>(`/members?${params.toString()}`);
       setMembers(payload.members);
+      setSelected((current) => current.filter((id) => payload.members.some((member) => member.id === id)));
     } catch (loadError) {
       setError(apiErrorMessage(loadError));
     } finally {
@@ -309,6 +312,40 @@ export function MembersPage() {
     }
   }
 
+  function toggleSelected(id: string) {
+    setSelected((current) =>
+      current.includes(id) ? current.filter((value) => value !== id) : [...current, id]
+    );
+  }
+
+  function toggleAll() {
+    setSelected((current) =>
+      current.length === members.length ? [] : members.map((member) => member.id)
+    );
+  }
+
+  async function bulkDeleteMembers() {
+    if (!selected.length) return;
+    if (!window.confirm(`هل تريد حذف ${formatNumber(selected.length)} عضو محدد؟ الأعضاء الذين لديهم سندات أو استحقاقات لن يُحذفوا.`)) return;
+    setBulkDeleting(true);
+    try {
+      const result = await api.post<{ deleted: number; blocked: number; missing: number; errors: string[] }>(
+        '/members/bulk-delete',
+        { ids: selected }
+      );
+      toast.success(`تم حذف ${formatNumber(result.deleted)} عضو`);
+      if (result.blocked || result.missing) {
+        toast.error(result.errors[0] ?? `تعذر حذف ${formatNumber(result.blocked + result.missing)} عضو`);
+      }
+      setSelected([]);
+      await load(false);
+    } catch (deleteError) {
+      toast.error(apiErrorMessage(deleteError));
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
   const totals = members.reduce(
     (acc, member) => ({
       accrued: acc.accrued + member.total_accrued,
@@ -373,6 +410,15 @@ export function MembersPage() {
             <option value="inactive">الأعضاء الموقوفون</option>
             <option value="all">جميع الأعضاء</option>
           </Select>
+          {capabilities?.deleteMembers && selected.length > 0 && (
+            <div className="selection-actions">
+              <span>تم اختيار {formatNumber(selected.length)}</span>
+              <Button variant="danger" size="sm" icon={<Trash2 size={15} />} loading={bulkDeleting} onClick={bulkDeleteMembers}>
+                حذف المحدد
+              </Button>
+              <button type="button" className="text-button" onClick={() => setSelected([])}>إلغاء</button>
+            </div>
+          )}
         </div>
 
         {loading ? (
@@ -391,6 +437,16 @@ export function MembersPage() {
             <table className="data-table">
               <thead>
                 <tr>
+                  {capabilities?.deleteMembers && (
+                    <th className="checkbox-cell">
+                      <input
+                        type="checkbox"
+                        checked={members.length > 0 && selected.length === members.length}
+                        onChange={toggleAll}
+                        aria-label="تحديد جميع الأعضاء"
+                      />
+                    </th>
+                  )}
                   <th>رقم العضوية</th>
                   <th>العضو</th>
                   <th>الهاتف</th>
@@ -404,7 +460,17 @@ export function MembersPage() {
               </thead>
               <tbody>
                 {members.map((member) => (
-                  <tr key={member.id}>
+                  <tr key={member.id} className={selected.includes(member.id) ? 'row-selected' : undefined}>
+                    {capabilities?.deleteMembers && (
+                      <td className="checkbox-cell">
+                        <input
+                          type="checkbox"
+                          checked={selected.includes(member.id)}
+                          onChange={() => toggleSelected(member.id)}
+                          aria-label={`تحديد ${member.full_name}`}
+                        />
+                      </td>
+                    )}
                     <td className="mono">{member.member_no}</td>
                     <td>
                       <div className="person-cell">
@@ -453,7 +519,7 @@ export function MembersPage() {
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={4}>الإجمالي ({formatNumber(members.length)} عضو)</td>
+                  <td colSpan={capabilities?.deleteMembers ? 5 : 4}>الإجمالي ({formatNumber(members.length)} عضو)</td>
                   <td>{money(totals.accrued)}</td>
                   <td className="text-emerald">{money(totals.paid)}</td>
                   <td className="danger-text">{money(totals.arrears)}</td>

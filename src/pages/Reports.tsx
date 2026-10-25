@@ -4,12 +4,16 @@ import {
   AlertTriangle,
   Award,
   BarChart3,
+  Bell,
   CalendarClock,
   Download,
   FileSpreadsheet,
+  MessageCircle,
+  MessageSquare,
   Printer,
   ReceiptText,
   RefreshCw,
+  Send,
   TrendingDown,
   TrendingUp,
   UserRound,
@@ -35,18 +39,21 @@ import {
   Button,
   Card,
   EmptyState,
+  Field,
   LoadingState,
+  Modal,
   PageHeader,
   Select,
   StatCard,
   Tabs,
+  Textarea,
 } from '../components/ui';
 import { HijriDateInput } from '../components/HijriInputs';
 import { currentHijriYear, fromHijri } from '../lib/hijri';
 import { ReportPrint } from '../components/PrintSheet';
-import type { CashLedger, Member } from '../types';
+import type { AnnualReport, CashLedger, Member } from '../types';
 
-type Tab = 'cash' | 'arrears' | 'donations' | 'disbursements' | 'member';
+type Tab = 'cash' | 'arrears' | 'donations' | 'disbursements' | 'member' | 'annual';
 
 interface ReportsSummary {
   from: string;
@@ -144,7 +151,7 @@ export function ReportsPage() {
   const realtimeVersion = useRealtimeVersion();
   const [searchParams, setSearchParams] = useSearchParams();
   const initialTab = (searchParams.get('tab') as Tab) || 'cash';
-  const [tab, setTab] = useState<Tab>(['cash', 'arrears', 'donations', 'disbursements', 'member'].includes(initialTab) ? initialTab : 'cash');
+  const [tab, setTab] = useState<Tab>(['cash', 'arrears', 'donations', 'disbursements', 'member', 'annual'].includes(initialTab) ? initialTab : 'cash');
   const [from, setFrom] = useState(firstOfYear());
   const [to, setTo] = useState(todayISO());
   const [summary, setSummary] = useState<ReportsSummary | null>(null);
@@ -159,11 +166,19 @@ export function ReportsPage() {
   const [members, setMembers] = useState<Member[]>([]);
   const [selectedMemberId, setSelectedMemberId] = useState('');
   const [memberStatement, setMemberStatement] = useState<MemberStatement | null>(null);
+  const [annual, setAnnual] = useState<AnnualReport | null>(null);
+  const [annualYear, setAnnualYear] = useState(new Date().getFullYear());
+  const [reminderOpen, setReminderOpen] = useState(false);
+  const [reminderChannel, setReminderChannel] = useState<'whatsapp' | 'sms'>('whatsapp');
+  const [reminderMessage, setReminderMessage] = useState('');
+  const [reminderIds, setReminderIds] = useState<string[]>([]);
+  const [sendingReminder, setSendingReminder] = useState(false);
+  const [reminderLinks, setReminderLinks] = useState<Array<{ name: string; whatsapp: string; sms: string }>>([]);
 
   useEffect(() => {
     if (searchParams.get('tab')) {
       const requested = searchParams.get('tab') as Tab;
-      if (['cash', 'arrears', 'donations', 'disbursements', 'member'].includes(requested)) setTab(requested);
+      if (['cash', 'arrears', 'donations', 'disbursements', 'member', 'annual'].includes(requested)) setTab(requested);
       setSearchParams({}, { replace: true });
     }
     api.get<{ members: Member[] }>('/members?status=active')
@@ -194,7 +209,9 @@ export function ReportsPage() {
                   ? (selectedMemberId
                     ? api.get<MemberStatement>(`/reports/member-movements?member_id=${selectedMemberId}&${range}`)
                     : Promise.resolve(null))
-                  : api.get<CashLedger>(`/reports/cash-ledger?${range}`);
+                  : tab === 'annual'
+                    ? api.get<AnnualReport>(`/reports/annual?year=${annualYear}`)
+                    : api.get<CashLedger>(`/reports/cash-ledger?${range}`);
         const [summaryPayload, payload] = await Promise.all([summaryPromise, tabPromise]);
         if (!active) return;
         setSummary(summaryPayload);
@@ -202,6 +219,7 @@ export function ReportsPage() {
         else if (tab === 'donations') setDonations(payload as typeof donations);
         else if (tab === 'disbursements') setDisbursements(payload as typeof disbursements);
         else if (tab === 'member') setMemberStatement(payload as MemberStatement | null);
+        else if (tab === 'annual') setAnnual(payload as AnnualReport);
         else setCash(payload as CashLedger);
       } catch (loadError) {
         if (active) setError(apiErrorMessage(loadError));
@@ -213,9 +231,95 @@ export function ReportsPage() {
     return () => {
       active = false;
     };
-  }, [tab, from, to, refreshKey, realtimeVersion, selectedMemberId]);
+  }, [tab, from, to, refreshKey, realtimeVersion, selectedMemberId, annualYear]);
 
   const rangeLabel = `${formatDate(from)} — ${formatDate(to)}`;
+
+  function reminderPhone(phone: string | null) {
+    const digits = String(phone ?? '').replace(/\D/g, '');
+    if (!digits) return '';
+    if (digits.startsWith('967')) return digits;
+    if (digits.startsWith('0')) return `967${digits.slice(1)}`;
+    if (digits.length === 9 && digits.startsWith('7')) return `967${digits}`;
+    return digits;
+  }
+
+  function reminderText(row: ArrearsRow, channel: 'whatsapp' | 'sms') {
+    const template = reminderMessage || 'عزيزنا {الاسم}، نود تذكيركم بسداد متأخرات الصندوق البالغة {المبلغ}. شكراً لتعاونكم.';
+    return template
+      .replaceAll('{الاسم}', row.full_name)
+      .replaceAll('{المبلغ}', money(row.arrears))
+      .replaceAll('{الشهر}', row.oldest_due ? monthLabel(row.oldest_due) : '')
+      .replaceAll('{القناة}', channel === 'whatsapp' ? 'واتساب' : 'رسالة نصية');
+  }
+
+  function openReminders() {
+    const rows = arrears?.rows ?? [];
+    setReminderIds(rows.map((row) => row.id));
+    setReminderLinks([]);
+    setReminderChannel('whatsapp');
+    setReminderMessage('عزيزنا {الاسم}، نود تذكيركم بسداد متأخرات الصندوق البالغة {المبلغ} عن أقدم استحقاق {الشهر}. شكراً لتعاونكم.');
+    setReminderOpen(true);
+  }
+
+  async function sendReminders() {
+    const rows = (arrears?.rows ?? []).filter((row) => reminderIds.includes(row.id));
+    if (!rows.length) {
+      toast.error('اختر عضواً واحداً على الأقل');
+      return;
+    }
+    setSendingReminder(true);
+    try {
+      await api.post('/reminders/log', {
+        member_ids: rows.map((row) => row.id),
+        channel: reminderChannel,
+        message: reminderMessage,
+      });
+      const links = rows.map((row) => {
+        const phone = reminderPhone(row.phone);
+        const text = reminderText(row, reminderChannel);
+        return {
+          name: row.full_name,
+          whatsapp: phone ? `https://wa.me/${phone}?text=${encodeURIComponent(text)}` : '',
+          sms: phone ? `sms:+${phone}?body=${encodeURIComponent(text)}` : '',
+        };
+      });
+      setReminderLinks(links);
+      toast.success(`تم تسجيل ${formatNumber(rows.length)} تذكير. اضغط على الرابط لإرساله.`);
+    } catch (reminderError) {
+      toast.error(apiErrorMessage(reminderError));
+    } finally {
+      setSendingReminder(false);
+    }
+  }
+
+  function toggleReminderId(id: string) {
+    setReminderIds((current) =>
+      current.includes(id) ? current.filter((value) => value !== id) : [...current, id]
+    );
+  }
+
+  async function quickReminder(row: ArrearsRow, channel: 'whatsapp' | 'sms') {
+    const phone = reminderPhone(row.phone);
+    if (!phone) {
+      toast.error('لا يوجد رقم هاتف مسجل لهذا العضو');
+      return;
+    }
+    const text = reminderText(row, channel);
+    try {
+      await api.post('/reminders/log', {
+        member_ids: [row.id],
+        channel,
+        message: text,
+      });
+      const url = channel === 'whatsapp'
+        ? `https://wa.me/${phone}?text=${encodeURIComponent(text)}`
+        : `sms:+${phone}?body=${encodeURIComponent(text)}`;
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (reminderError) {
+      toast.error(apiErrorMessage(reminderError));
+    }
+  }
 
   async function exportReport(type: string) {
     try {
@@ -267,8 +371,16 @@ export function ReportsPage() {
         { label: 'إجمالي المتأخرات', value: money(memberStatement.totals.arrears) },
       ];
     }
+    if (tab === 'annual' && annual) {
+      return [
+        { label: 'إجمالي الإيرادات', value: money(annual.totals.receipts) },
+        { label: 'إجمالي المصروفات', value: money(annual.totals.expenses) },
+        { label: 'الصافي', value: money(annual.totals.net) },
+        { label: 'نسبة التحصيل', value: `${formatNumber(annual.totals.collection_rate)}%` },
+      ];
+    }
     return [];
-  }, [tab, cash, arrears, donations, disbursements, memberStatement]);
+  }, [tab, cash, arrears, donations, disbursements, memberStatement, annual]);
 
   return (
     <div className="page-stack">
@@ -399,6 +511,7 @@ export function ReportsPage() {
               { value: 'donations', label: 'تقرير التبرعات' },
               { value: 'disbursements', label: 'تقرير المصروفات' },
               { value: 'member', label: 'كشف حركة عضو' },
+              { value: 'annual', label: 'المؤشرات السنوية' },
             ]}
           />
           {tab === 'member' && (
@@ -409,14 +522,27 @@ export function ReportsPage() {
               ))}
             </Select>
           )}
-          {tab !== 'arrears' && (
+          {tab === 'annual' && (
+            <Select value={String(annualYear)} onChange={(event) => setAnnualYear(Number(event.target.value))}>
+              {Array.from({ length: 6 }, (_, index) => new Date().getFullYear() - index).map((year) => (
+                <option key={year} value={year}>{year}</option>
+              ))}
+            </Select>
+          )}
+          {tab !== 'arrears' && tab !== 'annual' && (
             <div className="date-range">
               <label>من (هجري) <HijriDateInput value={from} onChange={setFrom} /></label>
               <label>إلى (هجري) <HijriDateInput value={to} onChange={setTo} /></label>
             </div>
           )}
         </div>
-        <span className="reports-range-label">{tab === 'arrears' ? 'جميع الفترات — حتى تاريخ اليوم' : `الفترة: ${rangeLabel}`}</span>
+        <span className="reports-range-label">
+          {tab === 'arrears'
+            ? 'جميع الفترات — حتى تاريخ اليوم'
+            : tab === 'annual'
+              ? `السنة الميلادية ${annualYear}`
+              : `الفترة: ${rangeLabel}`}
+        </span>
       </Card>
 
       {loading ? (
@@ -506,6 +632,9 @@ export function ReportsPage() {
                 <div className="report-head-metrics">
                   <div><span>أعضاء متأخرون</span><strong>{formatNumber(arrears.totals.members)}</strong></div>
                   <div><span>إجمالي المتأخرات</span><strong className="text-danger">{money(arrears.totals.arrears)}</strong></div>
+                  <Button size="sm" variant="secondary" icon={<Bell size={15} />} onClick={openReminders}>
+                    تذكير المتأخرين
+                  </Button>
                 </div>
               </div>
               {arrears.rows.length === 0 ? (
@@ -524,6 +653,7 @@ export function ReportsPage() {
                         <th>أشهر مفتوحة</th>
                         <th>أقدم استحقاق</th>
                         <th>الحالة</th>
+                        <th>تذكير</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -538,6 +668,16 @@ export function ReportsPage() {
                           <td>{formatNumber(row.open_months)}</td>
                           <td>{row.oldest_due ? monthLabel(row.oldest_due) : '—'}</td>
                           <td><Badge tone={row.active ? 'success' : 'neutral'} dot>{row.active ? 'نشط' : 'موقوف'}</Badge></td>
+                          <td>
+                            <div className="row-actions">
+                              <button type="button" className="icon-btn whatsapp-text" title="تذكير واتساب" onClick={() => quickReminder(row, 'whatsapp')}>
+                                <MessageCircle size={16} />
+                              </button>
+                              <button type="button" className="icon-btn" title="تذكير SMS" onClick={() => quickReminder(row, 'sms')}>
+                                <MessageSquare size={16} />
+                              </button>
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -547,7 +687,7 @@ export function ReportsPage() {
                         <td>{money(arrears.totals.accrued)}</td>
                         <td>{money(arrears.totals.paid)}</td>
                         <td>{money(arrears.totals.arrears)}</td>
-                        <td colSpan={3} />
+                        <td colSpan={4} />
                       </tr>
                     </tfoot>
                   </table>
@@ -662,6 +802,70 @@ export function ReportsPage() {
                 </div>
               )}
             </Card>
+          )}
+
+          {tab === 'annual' && annual && (
+            <>
+              <section className="stats-grid four">
+                <StatCard label="إيرادات السنة" value={money(annual.totals.receipts)} hint={`مقارنة بـ ${money(annual.previous.receipts)}`} icon={<TrendingUp size={21} />} tone="emerald" />
+                <StatCard label="مصروفات السنة" value={money(annual.totals.expenses)} hint={`مقارنة بـ ${money(annual.previous.expenses)}`} icon={<TrendingDown size={21} />} tone="gold" />
+                <StatCard label="الصافي السنوي" value={money(annual.totals.net)} hint={annual.growth.net === null ? 'لا توجد سنة سابقة للمقارنة' : `نمو ${formatNumber(annual.growth.net)}%`} icon={<Wallet size={21} />} tone="blue" />
+                <StatCard label="نسبة التحصيل" value={`${formatNumber(annual.totals.collection_rate)}%`} hint={`${formatNumber(annual.totals.active_members)} عضو نشط`} icon={<Award size={21} />} tone="slate" />
+              </section>
+
+              <Card padding={false} className="table-card annual-card">
+                <div className="report-head">
+                  <div>
+                    <h3>المؤشرات السنوية {annual.year}</h3>
+                    <p>مقارنة الإيرادات والمصروفات والنمو مع السنة السابقة، مع حركة الأعضاء الجدد.</p>
+                  </div>
+                  <div className="annual-growth-grid">
+                    <div><span>نمو الإيرادات</span><strong className={annual.growth.receipts !== null && annual.growth.receipts < 0 ? 'danger-text' : 'text-emerald'}>
+                      {annual.growth.receipts === null ? '—' : `${formatNumber(annual.growth.receipts)}%`}
+                    </strong></div>
+                    <div><span>نمو المصروفات</span><strong className={annual.growth.expenses !== null && annual.growth.expenses > 0 ? 'text-gold' : ''}>
+                      {annual.growth.expenses === null ? '—' : `${formatNumber(annual.growth.expenses)}%`}
+                    </strong></div>
+                    <div><span>أعضاء جدد</span><strong>{formatNumber(annual.totals.new_members)}</strong></div>
+                  </div>
+                </div>
+                <div className="table-wrap">
+                  <table className="data-table annual-table">
+                    <thead>
+                      <tr><th>الشهر</th><th>الإيرادات</th><th>المصروفات</th><th>الصافي</th><th>المؤشر</th></tr>
+                    </thead>
+                    <tbody>
+                      {annual.months.map((row) => {
+                        const max = Math.max(1, ...annual.months.map((item) => Math.max(item.receipts, item.expenses)));
+                        return (
+                          <tr key={row.month}>
+                            <td>{monthLabel(row.month)}</td>
+                            <td className="text-emerald">{money(row.receipts)}</td>
+                            <td className="text-gold">{money(row.expenses)}</td>
+                            <td className={row.net < 0 ? 'danger-text' : ''}>{money(row.net)}</td>
+                            <td>
+                              <div className="annual-bars">
+                                <i className="emerald" style={{ width: `${(row.receipts / max) * 100}%` }} />
+                                <i className="gold" style={{ width: `${(row.expenses / max) * 100}%` }} />
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <td>الإجمالي</td>
+                        <td>{money(annual.totals.receipts)}</td>
+                        <td>{money(annual.totals.expenses)}</td>
+                        <td>{money(annual.totals.net)}</td>
+                        <td />
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </Card>
+            </>
           )}
 
           {tab === 'member' && (
@@ -826,6 +1030,39 @@ export function ReportsPage() {
         </ReportPrint>
       )}
 
+      {printing && tab === 'annual' && annual && (
+        <ReportPrint
+          title={`المؤشرات السنوية ${annual.year}`}
+          subtitle="مقارنة الإيرادات والمصروفات والنمو"
+          metrics={printMetrics}
+          onClose={() => setPrinting(false)}
+        >
+          <table className="print-table compact">
+            <thead>
+              <tr><th>الشهر</th><th>الإيرادات</th><th>المصروفات</th><th>الصافي</th></tr>
+            </thead>
+            <tbody>
+              {annual.months.map((row) => (
+                <tr key={row.month}>
+                  <td>{monthLabel(row.month)}</td>
+                  <td>{money(row.receipts, false)}</td>
+                  <td>{money(row.expenses, false)}</td>
+                  <td>{money(row.net, false)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr><th>الإجمالي</th><th>{money(annual.totals.receipts, false)}</th><th>{money(annual.totals.expenses, false)}</th><th>{money(annual.totals.net, false)}</th></tr>
+            </tfoot>
+          </table>
+          <div className="print-note">
+            نمو الإيرادات: {annual.growth.receipts === null ? '—' : `${formatNumber(annual.growth.receipts)}%`} —
+            نمو المصروفات: {annual.growth.expenses === null ? '—' : `${formatNumber(annual.growth.expenses)}%`} —
+            أعضاء جدد: {formatNumber(annual.totals.new_members)}.
+          </div>
+        </ReportPrint>
+      )}
+
       {printing && tab === 'member' && memberStatement && (
         <ReportPrint
           title={`كشف حركة العضو: ${memberStatement.member.full_name}`}
@@ -866,6 +1103,90 @@ export function ReportsPage() {
             </div>
           )}
         </ReportPrint>
+      )}
+
+      {reminderOpen && arrears && (
+        <Modal
+          title="تذكير المتأخرين"
+          subtitle="تسجيل التذكيرات وإنشاء روابط واتساب ورسائل SMS جاهزة للإرسال"
+          icon={<Bell size={20} />}
+          size="lg"
+          onClose={() => setReminderOpen(false)}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setReminderOpen(false)} disabled={sendingReminder}>إغلاق</Button>
+              <Button onClick={sendReminders} loading={sendingReminder} icon={<Send size={16} />}>
+                تسجيل التذكيرات
+              </Button>
+            </>
+          }
+        >
+          <div className="form-stack">
+            <Alert tone="info">
+              لا يرسل النظام الرسائل تلقائياً. يتم تسجيل التذكير ثم فتح رابط واتساب أو SMS لإرساله من هاتفك.
+            </Alert>
+            <div className="form-grid two">
+              <Field label="قناة التذكير" required>
+                <Select value={reminderChannel} onChange={(event) => setReminderChannel(event.target.value as 'whatsapp' | 'sms')}>
+                  <option value="whatsapp">واتساب</option>
+                  <option value="sms">رسالة SMS</option>
+                </Select>
+              </Field>
+              <Field label="عدد المحددين">
+                <div className="reminder-count">{formatNumber(reminderIds.length)} من {formatNumber(arrears.rows.length)}</div>
+              </Field>
+            </div>
+            <Field label="نص التذكير" hint="يمكن استخدام {الاسم} و{المبلغ} و{الشهر}">
+              <Textarea value={reminderMessage} onChange={(event) => setReminderMessage(event.target.value)} rows={4} />
+            </Field>
+            <div className="member-picker-head">
+              <strong>الأعضاء المتأخرون</strong>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setReminderIds(reminderIds.length === arrears.rows.length ? [] : arrears.rows.map((row) => row.id))}
+              >
+                {reminderIds.length === arrears.rows.length ? 'إلغاء تحديد الكل' : 'تحديد الكل'}
+              </button>
+            </div>
+            <div className="member-picker reminder-picker">
+              {arrears.rows.map((row) => (
+                <label key={row.id} className="member-pick-row">
+                  <input
+                    type="checkbox"
+                    checked={reminderIds.includes(row.id)}
+                    onChange={() => toggleReminderId(row.id)}
+                  />
+                  <span className="avatar avatar-xs">{row.full_name.charAt(0)}</span>
+                  <span>
+                    <strong>{row.full_name}</strong>
+                    <small>{row.member_no} — متأخرات {money(row.arrears)} — {row.phone || 'بدون هاتف'}</small>
+                  </span>
+                </label>
+              ))}
+            </div>
+            {reminderLinks.length > 0 && (
+              <div className="reminder-links">
+                <strong>روابط الإرسال الجاهزة</strong>
+                {reminderLinks.map((link) => (
+                  <div key={link.name} className="reminder-link-row">
+                    <span>{link.name}</span>
+                    {link.whatsapp ? (
+                      <a className="btn btn-secondary btn-sm" href={link.whatsapp} target="_blank" rel="noreferrer">
+                        <MessageCircle size={15} /> واتساب
+                      </a>
+                    ) : <small>بدون رقم</small>}
+                    {link.sms ? (
+                      <a className="btn btn-ghost btn-sm" href={link.sms}>
+                        <MessageSquare size={15} /> SMS
+                      </a>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Modal>
       )}
     </div>
   );

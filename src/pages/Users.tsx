@@ -138,6 +138,7 @@ export function UsersPage() {
     role: 'member' as Role,
     linked_member_id: '',
     active: true,
+    phone_login_enabled: false,
   });
   const [passwordTarget, setPasswordTarget] = useState<AdminUser | null>(null);
   const [newPassword, setNewPassword] = useState('');
@@ -149,6 +150,7 @@ export function UsersPage() {
   const [approvalTarget, setApprovalTarget] = useState<AdminUser | null>(null);
   const [approvalRole, setApprovalRole] = useState<Role>('member');
   const [approvalMemberId, setApprovalMemberId] = useState('');
+  const [approvalPhoneLogin, setApprovalPhoneLogin] = useState(false);
   const [approvalSaving, setApprovalSaving] = useState(false);
   const [approvalError, setApprovalError] = useState('');
 
@@ -210,6 +212,7 @@ export function UsersPage() {
       role: 'member',
       linked_member_id: '',
       active: true,
+      phone_login_enabled: false,
     });
     setPermissions(defaultPermissionsFor('member'));
     setFormError('');
@@ -226,6 +229,7 @@ export function UsersPage() {
       role: target.role,
       linked_member_id: target.linked_member_id ?? '',
       active: Boolean(target.active),
+      phone_login_enabled: Boolean(target.phone_login_enabled),
     });
     setPermissions({ ...defaultPermissionsFor(target.role), ...(target.permissions ?? {}) });
     setFormError('');
@@ -246,6 +250,7 @@ export function UsersPage() {
       await api.post(`/users/${approvalTarget.id}/approve`, {
         role: approvalRole,
         linked_member_id: approvalMemberId || null,
+        phone_login_enabled: approvalPhoneLogin,
         permissions: defaultPermissionsFor(approvalRole),
       });
       toast.success(`تمت الموافقة على ${approvalTarget.full_name}`);
@@ -279,6 +284,7 @@ export function UsersPage() {
         await api.patch(`/users/${editing.id}`, {
           full_name: form.full_name.trim(),
           phone: form.phone.trim() || null,
+          phone_login_enabled: form.phone_login_enabled,
           role: form.role,
           active: form.active,
           linked_member_id: form.linked_member_id || null,
@@ -292,6 +298,7 @@ export function UsersPage() {
           email: form.email.trim(),
           password: form.password,
           phone: form.phone.trim() || null,
+          phone_login_enabled: form.phone_login_enabled,
           role: form.role,
           linked_member_id: form.linked_member_id || null,
           permissions,
@@ -377,6 +384,7 @@ export function UsersPage() {
                       setApprovalTarget(row);
                       setApprovalRole('member');
                       setApprovalMemberId(row.linked_member_id ?? '');
+                      setApprovalPhoneLogin(Boolean(row.phone_login_enabled));
                       setApprovalError('');
                     }}
                   >
@@ -434,6 +442,7 @@ export function UsersPage() {
                         <div>
                           <strong>{row.full_name}{row.id === currentUser?.id && <span className="self-tag">أنت</span>}</strong>
                           <small dir="ltr">{row.phone ?? '—'}</small>
+                          {row.phone_login_enabled && <small className="phone-login-tag">دخول بالهاتف مفعّل</small>}
                         </div>
                       </div>
                     </td>
@@ -516,6 +525,23 @@ export function UsersPage() {
                 </Select>
               </Field>
             </div>
+
+            <label className="switch-field">
+              <input
+                type="checkbox"
+                checked={form.phone_login_enabled}
+                onChange={(e) => setForm((current) => ({ ...current, phone_login_enabled: e.target.checked }))}
+              />
+              <span className="switch" />
+              <span>السماح بالدخول برقم الهاتف بدلاً من البريد الإلكتروني</span>
+            </label>
+            {form.phone_login_enabled && (
+              <Alert tone={form.phone.trim() ? 'info' : 'warning'}>
+                {form.phone.trim()
+                  ? 'سيتمكن المستخدم من تسجيل الدخول بهذا الرقم وكلمة المرور. يجب أن يكون الرقم فريداً بين الحسابات المفعّلة.'
+                  : 'أدخل رقم هاتف صالحاً أولاً، ثم فعّل هذا الخيار.'}
+              </Alert>
+            )}
 
             <div className="permission-matrix">
               <div className="permission-matrix-head">
@@ -610,6 +636,17 @@ export function UsersPage() {
                 </Select>
               </Field>
             </div>
+            <label className="switch-field">
+              <input
+                type="checkbox"
+                checked={approvalPhoneLogin}
+                onChange={(event) => setApprovalPhoneLogin(event.target.checked)}
+              />
+              <span>
+                <strong>السماح بالدخول برقم الهاتف</strong>
+                <small>{approvalTarget.phone ? `سيتمكن من الدخول بالرقم ${approvalTarget.phone}` : 'أضف رقم هاتف للحساب أولاً من شاشة التعديل'}</small>
+              </span>
+            </label>
             <Alert tone="warning">
               سيتم تفعيل الحساب فوراً وإرسال إشعار للمستخدم. تأكد من اختيار الدور الصحيح قبل المتابعة.
             </Alert>

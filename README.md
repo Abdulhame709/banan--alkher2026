@@ -2,7 +2,9 @@
 
 نظام عربي (RTL) لإدارة صندوق خيري: الأعضاء، الاشتراكات الشهرية، سندات القبض والتبرعات،
 طلبات الصرف بالاعتماد المزدوج، التقارير، الطباعة، التصدير، الإشعارات الفورية، والنسخ
-الاحتياطية.
+الاحتياطية. يدعم أيضًا تسجيل الدخول بالبريد أو الهاتف، الحذف الجماعي، استيراد سندات
+Excel، المرفقات المتعددة، التوقيع الإلكتروني والتحقق بـ QR، تذكيرات واتساب/SMS،
+التنبيهات الذكية، وتقارير PDF ومؤشرات سنوية.
 
 **الروابط الحالية**
 
@@ -35,7 +37,7 @@ PostgreSQL (Supabase)  ──  RLS + triggers + realtime
 - **الواجهة:** React 19 + Vite + TypeScript + HashRouter.
 - **الاستضافة:** GitHub Pages (نسخة الويب) وGitHub Releases (APK).
 - **البيانات:** Supabase PostgreSQL مع RLS.
-- **المصادقة:** Supabase Auth (بريد وكلمة مرور).
+- **المصادقة:** Supabase Auth (بريد أو رقم هاتف وكلمة مرور).
 - **الملفات:** Supabase Storage.
 - **التحديث الفوري:** Supabase Realtime (جدول أحداث خفيف `fund_events` + إشعارات).
 - **الخادم:** Edge Function واحدة تحافظ على نفس واجهة REST القديمة.
@@ -79,6 +81,25 @@ PostgreSQL (Supabase)  ──  RLS + triggers + realtime
 - المبالغ أعداد صحيحة فقط، وتُعرض بفواصل الآلاف مثل `1,000` وليس `1000.01`.
 - ترقيم السندات تسلسلي: `REC-0001`، `PV-0001`.
 - كل عملية مالية تُسجّل في `fund_audit_logs`، والسجل غير قابل للتعديل أو الحذف.
+
+### مزايا تشغيلية مضافة
+
+- **دخول بالهاتف:** يمكن للمدير تفعيل `phone_login_enabled` لأي مستخدم. يقبل
+  النظام الأرقام اليمنية بصيغ `777123456` و`0777123456` و`+967 777 123 456`
+  و`00967 777 123 456`، ويرفض الرقم غير المرتبط أو المكرر أو المعطّل.
+- **حذف جماعي:** تحديد عدة أعضاء أو استحقاقات وحذفها دفعة واحدة، مع منع حذف
+  ما له سندات أو حركات مالية.
+- **استيراد سندات Excel:** استيراد `.xlsx` أو `.csv` مع معاينة الأخطاء قبل
+  الحفظ.
+- **مرفقات متعددة:** حتى 10 ملفات لكل سند قبض أو طلب صرف (صور أو PDF).
+- **توقيع إلكتروني وQR:** توقيع سند القبض أو سند الصرف، وإضافة QR للتحقق العام
+  من صحة السند عبر `/#/verify/receipt/<token>` أو `/#/verify/expense/<token>`.
+- **تذكيرات واتساب/SMS:** روابط جاهزة مع تسجيل التذكير، وتذكير تلقائي قبل
+  نهاية الشهر الهجري.
+- **تنبيهات ذكية:** تجاوز حد الرصيد النقدي، تجاوز نسبة الالتزامات، وتأخر
+  الاعتماد.
+- **مؤشرات سنوية:** مقارنة الإيرادات والمصروفات والنمو شهرياً.
+- **PDF عربي:** تنزيل السند/التقرير كـ PDF من نسخة الويب، مع ترويسة وتوقيع.
 
 ---
 
@@ -131,6 +152,10 @@ npm run apk:sync      # build + npx cap sync android
 | `0002_realtime_events.sql` | جدول `fund_events` و triggers النشر الفوري |
 | `0003_backups.sql` | جدول `fund_backups`، bucket النسخ، صلاحياته |
 | `0004_production_governance.sql` | الأدوار الجديدة، صلاحيات كل مستخدم، اعتماد الصرف بمرحلتين، التاريخ الهجري، الاستحقاق التلقائي، rate limiting |
+| `0005_bulk_import_signing.sql` | استثناءات الاستحقاقات المحذوفة، المرفقات المتعددة، التوقيع وQR، سجل التذكيرات، حدود التنبيهات |
+| `0006_phone_login.sql` | عمود `phone_login_enabled` وفهرس فريد للهاتف |
+| `0007_keepalive.sql` | جدول `fund_keepalive` ودالة `ping_keepalive()` |
+| `0008_phone_normalization.sql` | توحيد صيغ الهاتف اليمني بين الواجهة وقاعدة البيانات |
 
 تطبيق الترحيلات عبر Supabase CLI:
 
@@ -149,9 +174,10 @@ $env:SUPABASE_ACCESS_TOKEN = "<management-api-token>"
 ### الجداول الأساسية
 
 `fund_settings`، `fund_user_profiles`، `fund_members`، `fund_subscriptions`،
-`fund_receipts`، `fund_expense_requests`، `fund_expense_approvals`،
+`fund_subscription_exclusions`، `fund_receipts`، `fund_expense_requests`،
+`fund_expense_approvals`، `fund_attachments`، `fund_reminder_logs`،
 `fund_audit_logs`، `fund_notifications`، `fund_events`، `fund_backups`،
-`fund_device_tokens`، `sequences`.
+`fund_device_tokens`، `fund_keepalive`، `sequences`.
 
 ---
 
@@ -209,6 +235,8 @@ curl "https://vhyckuwhuhdyvhxyqdgt.supabase.co/functions/v1/api/health" `
 | `VITE_SUPABASE_URL` | رابط المشروع |
 | `VITE_SUPABASE_ANON_KEY` | المفتاح العام anon |
 | `VITE_API_BASE_URL` | `https://<ref>.supabase.co/functions/v1/api` |
+| `VITE_PUBLIC_APP_URL` | رابط الويب النهائي (يُستخدم في QR والتحقق) |
+| `VITE_EDGE_REGION` | `ap-northeast-2` |
 
 > لا تضع `service_role` في أسرار Vite. هو مطلوب فقط للـ Edge Function (مضبوط تلقائياً
 > في Supabase).
@@ -263,7 +291,7 @@ npx cap sync android
 cd android
 ./gradlew assembleRelease `
   -PbananVersionCode=3 `
-  -PbananVersionName=1.0.12
+  -PbananVersionName=1.0.13
 ```
 
 أو اترك GitHub Actions يبني وينشر تلقائياً عند الدفع إلى `main`. يظهر الإصدار في
@@ -297,9 +325,12 @@ cd android
     "fund_user_profiles": [],
     "fund_members": [],
     "fund_subscriptions": [],
+    "fund_subscription_exclusions": [],
     "fund_receipts": [],
     "fund_expense_requests": [],
     "fund_expense_approvals": [],
+    "fund_attachments": [],
+    "fund_reminder_logs": [],
     "fund_audit_logs": [],
     "sequences": []
   }
@@ -334,6 +365,10 @@ cd android
 - `service_role` يبقى داخل بيئة Supabase فقط.
 - سجل التدقيق غير قابل للتعديل أو الحذف (`trg_audit_no_change`).
 - رفع الملفات يتحقق من البصمة الفعلية (magic bytes) لا من الامتداد فقط.
+- دخول الهاتف يتم في الخادم فقط: يبحث عن البريد المرتبط سراً ثم يعيد جلسة،
+  ولا يكشف البريد للمتصفح. الأرقام المكررة/المعطلة/غير المرتبطة مرفوضة.
+- التحقق العام بـ QR يعرض بيانات السند الأساسية فقط عبر رمز عشوائي غير قابل
+  للتخمين، ولا يسمح بأي تعديل.
 - طلبات الكتابة محدودة بـ 600 طلب/دقيقة/IP، وCORS مقصور على نطاقات التطبيق.
 - ملفات المفاتيح المحلية:
   - `SUPABASE_KEYS.txt` (رابط المشروع، anon، service، Management API، كلمة مرور المدير تحت `ADMIN_PASSWORD`).
@@ -346,9 +381,9 @@ cd android
 
 ## 11. حالة التشغيل والحسابات
 
-المشروع الجديد بدأ بقاعدة بيانات نظيفة. البيانات المالية والأعضاء التجريبية **غير موجودة**،
-والنظام جاهز لإدخال بيانات الصندوق الحقيقية. المشروع القديم يبقى كنسخة احتياطية حتى يتم
-التأكد من المشروع الجديد بالكامل.
+المشروع الجديد بدأ بقاعدة بيانات نظيفة. أي أعضاء أو حركات مالية تظهر الآن فهي من
+إدخال المستخدم بعد التشغيل، وليست بيانات تجريبية. المشروع القديم يبقى كنسخة احتياطية
+حتى يتم التأكد من المشروع الجديد بالكامل.
 
 الحساب الموجود حالياً:
 
@@ -380,13 +415,13 @@ node scripts/seed-supabase.mjs
 
 ```
 src/
-  components/      الواجهات المشتركة (Layout, NotificationBell, BackupCard, ...)
-  lib/             api, auth, supabase, realtime, toast, format
-  pages/           Dashboard, Members, Subscriptions, Receipts, Expenses, Reports, Users, Audit, Settings
+  components/      الواجهات المشتركة (Layout, MultiFileUpload, SignaturePad, PrintSheet, ...)
+  lib/             api, auth, supabase, realtime, toast, format, pdf, public
+  pages/           Dashboard, Members, Subscriptions, Receipts, Expenses, Reports, Users, Audit, Settings, Verify
   types.ts
 supabase/
   functions/api/index.ts     Edge Function (Hono)
-  migrations/                0001, 0002, 0003, 0004
+  migrations/                0001 … 0008
 scripts/
   seed-supabase.mjs          بذر بيانات تجريبية (اختياري للتطوير)
   restore-backup.mjs         استعادة متقدمة للمسؤول التقني
@@ -397,6 +432,7 @@ android/                     مشروع Capacitor Android
 .github/workflows/           deploy-pages.yml + build-apk.yml + keep-alive.yml
 docs/دليل-المستخدم.md
 docs/استعادة-النسخة.md
+docs/التشغيل-الدائم.md
 ```
 
 ---
@@ -405,11 +441,16 @@ docs/استعادة-النسخة.md
 
 - عند أول دخول كل شهر هجري جديد، ينشئ النظام استحقاقاً بقيمة الاشتراك الشهري لكل عضو نشط.
 - زر **توليد استحقاقات فترة** مخصص للفترات السابقة أو التوليد الجماعي ضمن نطاق أشهر وأعضاء محددين.
-- workflow `.github/workflows/keep-alive.yml` يعمل مرتين يومياً:
+- workflow `.github/workflows/keep-alive.yml` يعمل **كل 6 ساعات** (4 مرات يومياً):
   - يطلب `/health?db=1` لإبقاء مشروع Supabase المجاني نشطاً.
-  - يطلب `/cron/dues` بالسر `CRON_SECRET` لإنشاء استحقاق الشهر الحالي.
-- يمكن تشغيله يدوياً من **Actions → Keep Supabase awake → Run workflow**.
-- إذا توقفت GitHub Actions بعد فترة خمول، شغّل الـ workflow يدوياً مرة واحدة.
+  - يطلب `POST /rest/v1/rpc/ping_keepalive` مباشرةً لتسجيل نبضة في القاعدة.
+  - يطلب `/cron/dues` بالسر `CRON_SECRET` لإنشاء استحقاق الشهر الحالي
+    وتشغيل تذكير نهاية الشهر الهجري.
+- يمكن تشغيله يدوياً من **Actions → Keep-alive and monthly dues → Run workflow**.
+- GitHub قد يؤخر المهام المجدولة أو يوقفها بعد خمول طويل؛ لذلك أضف مراقباً
+  خارجياً (UptimeRobot أو cron-job.org) كل 5 دقائق.
+- التفاصيل الكاملة: [`docs/التشغيل-الدائم.md`](docs/التشغيل-الدائم.md).
+- الضمان الوحيد ضد إيقاف Supabase المجاني هو خطة Pro.
 
 ---
 
@@ -424,6 +465,8 @@ docs/استعادة-النسخة.md
 | فشل رفع ملف | تحقق من الحجم والنوع، ومن تسجيل الدخول |
 | فشل بناء APK | راجع سجل GitHub Actions؛ تأكد من أسرار keystore وAndroid SDK 36 |
 | فشل نشر Pages | تأكد أن الدفع إلى `main` وأن Pages Source = GitHub Actions |
+| الموقع/التطبيق لا يفتح إلا مع VPN | اختبر `github.io` و`supabase.co` منفصلين، ثم انقل الويب إلى Cloudflare Pages/Netlify أو استخدم نطاقاً مخصصاً. راجع `docs/التشغيل-الدائم.md` |
+| توقف Supabase بعد أسبوع | أضف مراقباً خارجياً كل 5 دقائق أو استخدم خطة Pro |
 
 ---
 
@@ -435,6 +478,10 @@ docs/استعادة-النسخة.md
 - GitHub Actions مجاني ضمن دقائق الحساب.
 - لا حاجة لخادم شخصي يعمل دائماً.
 - راقب حدود Supabase (حجم القاعدة، التخزين، طلبات Edge Function) من لوحة المشروع.
+- الخطة المجانية قد تُوقف المشروع بعد 7 أيام بلا نشاط؛ استخدم المراقب الخارجي
+  أو خطة Pro. راجع `docs/التشغيل-الدائم.md`.
+- إذا كان `github.io` محجوباً في شبكتك، استخدم Cloudflare Pages أو Netlify أو
+  نطاقاً مخصصاً؛ لا تعتمد على VPN للتشغيل الدائم.
 
 ---
 

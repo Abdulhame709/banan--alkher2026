@@ -15,6 +15,7 @@ import { ReportsPage } from './pages/Reports';
 import { UsersPage } from './pages/Users';
 import { SettingsPage } from './pages/Settings';
 import { AuditPage } from './pages/Audit';
+import { VerifyPage } from './pages/Verify';
 import type { Capabilities } from './types';
 
 function Splash() {
@@ -101,6 +102,7 @@ export default function App() {
 
   return (
     <Routes>
+      <Route path="/verify/:type/:token" element={<VerifyPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route
         element={

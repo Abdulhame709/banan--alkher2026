@@ -18,6 +18,7 @@ export interface User {
   approval_status: 'pending' | 'approved' | 'rejected';
   permissions: Record<string, boolean>;
   linked_member_id: string | null;
+  phone_login_enabled: boolean;
   created_at: string;
 }
 
@@ -80,7 +81,30 @@ export interface FundSettings extends PublicSettings {
   opening_balance: number;
   allow_self_approval_demo: boolean;
   auto_dues_enabled: boolean;
+  cash_alert_threshold: number;
+  commitment_alert_percent: number;
+  approval_alert_days: number;
+  reminder_day: number;
   updated_at: string;
+}
+
+export interface Attachment {
+  id: string;
+  entity_type: 'receipt' | 'expense';
+  entity_id: string;
+  file_name: string;
+  original_name: string | null;
+  mime_type: string | null;
+  size_bytes: number;
+  uploaded_by: string | null;
+  created_at: string;
+}
+
+export interface UploadedAttachment {
+  file: string;
+  name: string;
+  mime: string | null;
+  size: number;
 }
 
 export interface SessionPayload {
@@ -143,9 +167,15 @@ export interface Receipt {
   restricted_purpose: string | null;
   receipt_date: string;
   attachment_url: string | null;
+  attachments?: Attachment[];
   notes: string | null;
   created_by: string | null;
   created_at: string;
+  verify_token: string;
+  signed_by_name: string | null;
+  signed_by_id: string | null;
+  signed_at: string | null;
+  signature_data: string | null;
   member_name?: string | null;
   member_no?: string | null;
   created_by_name?: string | null;
@@ -184,18 +214,33 @@ export interface Expense {
   approval_count: number;
   payment_voucher_no: string | null;
   attachment_url: string | null;
+  attachments?: Attachment[];
   notes: string | null;
   created_by: string | null;
   disbursed_by: string | null;
   disbursed_at: string | null;
   created_at: string;
+  verify_token: string;
+  signed_by_name: string | null;
+  signed_by_id: string | null;
+  signed_at: string | null;
+  signature_data: string | null;
   created_by_name?: string | null;
   disbursed_by_name?: string | null;
   approvals: ExpenseApproval[];
 }
 
+export interface SmartAlert {
+  id: string;
+  severity: 'danger' | 'warning' | 'info' | 'success';
+  title: string;
+  message: string;
+  link: string;
+}
+
 export interface DashboardData {
   restricted: boolean;
+  alerts?: SmartAlert[];
   position: {
     opening_balance: number;
     total_receipts: number;
@@ -285,6 +330,23 @@ export interface CashLedger {
     balance: number;
     created_at: string;
   }>;
+}
+
+export interface AnnualReport {
+  year: number;
+  months: Array<{ month: string; receipts: number; expenses: number; net: number }>;
+  totals: {
+    receipts: number;
+    expenses: number;
+    net: number;
+    collection_rate: number;
+    active_members: number;
+    total_members: number;
+    new_members: number;
+  };
+  previous: { receipts: number; expenses: number; net: number };
+  growth: { receipts: number | null; expenses: number | null; net: number | null };
+  member_growth: Array<{ month: string; count: number }>;
 }
 
 export interface ApiError {
