@@ -900,7 +900,7 @@ async function rateLimit(key: string, limit: number, windowSeconds: number) {
 
 const app = new Hono().basePath('/api');
 const APP_ORIGINS = (Deno.env.get('APP_ORIGINS')
-  ?? 'https://walid19-89.github.io,https://abdulhame709.github.io,http://localhost:5173,http://localhost:4173,https://localhost,capacitor://localhost')
+  ?? 'https://walid19-89.github.io,https://abdulhame709.github.io,http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173,http://127.0.0.1:4173,https://localhost,capacitor://localhost')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
