@@ -8,10 +8,10 @@
 
 | الخدمة | الرابط |
 |---|---|
-| نسخة الويب (PWA) | https://abdulhame709.github.io/banan--alkher2026/ |
-| تطبيق الأندرويد (APK) | https://github.com/Abdulhame709/banan--alkher2026/releases |
-| الكود | https://github.com/Abdulhame709/banan--alkher2026 |
-| Supabase | https://supabase.com/dashboard/project/jjzyqgqeevgevmvojyvn |
+| نسخة الويب (PWA) | https://walid19-89.github.io/banan--alkher2026/ |
+| تطبيق الأندرويد (APK) | https://github.com/walid19-89/banan--alkher2026/releases |
+| الكود | https://github.com/walid19-89/banan--alkher2026 |
+| Supabase | https://supabase.com/dashboard/project/vhyckuwhuhdyvhxyqdgt |
 
 > دليل الاستخدام خطوة بخطوة: [`docs/دليل-المستخدم.md`](docs/دليل-المستخدم.md)
 
@@ -39,7 +39,7 @@ PostgreSQL (Supabase)  ──  RLS + triggers + realtime
 - **الملفات:** Supabase Storage.
 - **التحديث الفوري:** Supabase Realtime (جدول أحداث خفيف `fund_events` + إشعارات).
 - **الخادم:** Edge Function واحدة تحافظ على نفس واجهة REST القديمة.
-- **المنطقة:** Edge Function تعمل في `ap-southeast-2` (سيدني) بجوار قاعدة البيانات.
+- **المنطقة:** Edge Function تعمل في `ap-northeast-2` (سيول) بجوار قاعدة البيانات.
 
 ---
 
@@ -135,7 +135,7 @@ npm run apk:sync      # build + npx cap sync android
 تطبيق الترحيلات عبر Supabase CLI:
 
 ```powershell
-npx supabase link --project-ref jjzyqgqeevgevmvojyvn
+npx supabase link --project-ref vhyckuwhuhdyvhxyqdgt
 npx supabase db push
 ```
 
@@ -160,7 +160,7 @@ $env:SUPABASE_ACCESS_TOKEN = "<management-api-token>"
 ```powershell
 $env:SUPABASE_ACCESS_TOKEN = "<management-api-token>"
 npx supabase functions deploy api `
-  --project-ref jjzyqgqeevgevmvojyvn `
+  --project-ref vhyckuwhuhdyvhxyqdgt `
   --no-verify-jwt
 ```
 
@@ -168,14 +168,14 @@ npx supabase functions deploy api `
   والإشعارات.
 - الدالة تقرأ `SUPABASE_DB_URL` من بيئة Supabase وتحوّله تلقائياً إلى Supavisor
   transaction pooler.
-- الواجهة ترسل `x-region: ap-southeast-2` لتثبيت التنفيذ في سيدني.
-- روابط الصور والتنزيل تستخدم `forceFunctionRegion=ap-southeast-2`.
+- الواجهة ترسل `x-region: ap-northeast-2` لتثبيت التنفيذ في سيول.
+- روابط الصور والتنزيل تستخدم `forceFunctionRegion=ap-northeast-2`.
 
 ### اختبار سريع
 
 ```powershell
-curl "https://jjzyqgqeevgevmvojyvn.supabase.co/functions/v1/api/health" `
-  -H "x-region: ap-southeast-2"
+curl "https://vhyckuwhuhdyvhxyqdgt.supabase.co/functions/v1/api/health" `
+  -H "x-region: ap-northeast-2"
 ```
 
 ---
@@ -186,7 +186,7 @@ curl "https://jjzyqgqeevgevmvojyvn.supabase.co/functions/v1/api/health" `
 2. اختر **Source: GitHub Actions**.
 3. ارفع التغييرات إلى الفرع `main`.
 4. سيعمل workflow `.github/workflows/deploy-pages.yml` تلقائياً.
-5. الرابط: `https://abdulhame709.github.io/banan--alkher2026/`.
+5. الرابط: `https://walid19-89.github.io/banan--alkher2026/`.
 
 الأسرار المطلوبة في **Settings → Secrets and variables → Actions**:
 

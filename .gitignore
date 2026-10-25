@@ -11,7 +11,9 @@ data/
 .env
 .env.local
 .env.*.local
+.env.backup-*
 SUPABASE_KEYS.txt
+SUPABASE_KEYS.backup-*
 ANDROID_KEYS.txt
 
 # logs

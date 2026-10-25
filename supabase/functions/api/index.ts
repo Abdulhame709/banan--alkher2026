@@ -22,6 +22,7 @@ const SERVICE_KEY =
 const DB_URL = Deno.env.get('SUPABASE_DB_URL')!;
 const BUCKET = Deno.env.get('SUPABASE_STORAGE_BUCKET') ?? 'fund-files';
 const BACKUP_BUCKET = Deno.env.get('SUPABASE_BACKUP_BUCKET') ?? 'fund-backups';
+const FUNCTION_REGION = Deno.env.get('BANAN_REGION') ?? 'ap-northeast-2';
 const BACKUP_RETENTION = 30;
 const BACKUP_TABLES = [
   'fund_settings',
@@ -45,7 +46,7 @@ if (!SUPABASE_URL || !ANON_KEY || !SERVICE_KEY || !DB_URL) {
 const databaseUrl = new URL(DB_URL);
 if (databaseUrl.hostname.startsWith('db.') && databaseUrl.hostname.endsWith('.supabase.co')) {
   const projectRef = databaseUrl.hostname.split('.')[1];
-  databaseUrl.hostname = 'aws-0-ap-southeast-2.pooler.supabase.com';
+  databaseUrl.hostname = `aws-0-${FUNCTION_REGION}.pooler.supabase.com`;
   databaseUrl.port = '6543';
   databaseUrl.username = `postgres.${projectRef}`;
   databaseUrl.searchParams.set('sslmode', 'require');
@@ -592,7 +593,7 @@ async function publicSettings() {
   return {
     fund_name: settings.fund_name,
     logo_url: settings.logo_url
-      ? `${SUPABASE_URL}/functions/v1/api/logo?forceFunctionRegion=ap-southeast-2&v=${encodeURIComponent(settings.updated_at)}`
+      ? `${SUPABASE_URL}/functions/v1/api/logo?forceFunctionRegion=${FUNCTION_REGION}&v=${encodeURIComponent(settings.updated_at)}`
       : null,
     currency: settings.currency,
     default_monthly_fee: Number(settings.default_monthly_fee),
@@ -899,7 +900,7 @@ async function rateLimit(key: string, limit: number, windowSeconds: number) {
 
 const app = new Hono().basePath('/api');
 const APP_ORIGINS = (Deno.env.get('APP_ORIGINS')
-  ?? 'https://abdulhame709.github.io,http://localhost:5173,http://localhost:4173,https://localhost,capacitor://localhost')
+  ?? 'https://walid19-89.github.io,https://abdulhame709.github.io,http://localhost:5173,http://localhost:4173,https://localhost,capacitor://localhost')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
@@ -2573,7 +2574,7 @@ function protocolSettings(settings: any) {
     ...settings,
     logo_file: settings.logo_url,
     logo_url: settings.logo_url
-      ? `${SUPABASE_URL}/functions/v1/api/logo?forceFunctionRegion=ap-southeast-2&v=${encodeURIComponent(settings.updated_at)}`
+      ? `${SUPABASE_URL}/functions/v1/api/logo?forceFunctionRegion=${FUNCTION_REGION}&v=${encodeURIComponent(settings.updated_at)}`
       : null,
     allow_self_approval_demo: false,
     allow_signups: Boolean(settings.allow_signups),

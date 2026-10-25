@@ -20,10 +20,10 @@ interface RequestOptions {
 }
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
-// Keep the Edge Function next to the database (Sydney). Without this the
+// Keep the Edge Function next to the database (Seoul). Without this the
 // platform runs it in the region closest to the visitor and every SQL query
 // pays a cross-region round trip.
-const EDGE_REGION = 'ap-southeast-2';
+const EDGE_REGION = import.meta.env.VITE_EDGE_REGION || 'ap-northeast-2';
 let accessToken: string | null = null;
 
 export function setAccessToken(token: string | null) {

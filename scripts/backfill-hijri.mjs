@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
 
 const keys = fs.readFileSync('SUPABASE_KEYS.txt', 'utf8');
-const url = 'https://jjzyqgqeevgevmvojyvn.supabase.co';
+const url = 'https://vhyckuwhuhdyvhxyqdgt.supabase.co';
 const jwts = [...keys.matchAll(/eyJ[a-zA-Z0-9_.-]+/g)].map((match) => match[0]);
 const serviceKey = jwts[1];
 if (!serviceKey) throw new Error('service role key not found');
