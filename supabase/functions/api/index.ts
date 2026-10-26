@@ -3713,7 +3713,7 @@ app.post('/users/:id/approve', async (c) => {
   const phoneLoginEnabled = body?.phone_login_enabled === undefined
     ? defaultPhoneLogin
     : (pendingHasRealEmail ? bool(body.phone_login_enabled, false) : true);
-  if (phoneLoginEnabled) await ensurePhoneLoginAvailable(pendingProfile.phone);
+  if (phoneLoginEnabled) await ensurePhoneLoginAvailable(pendingProfile.phone, pendingProfile.user_id);
   const linkedMemberId = str(body?.linked_member_id, { name: 'العضو المرتبط', max: 60 });
   if (linkedMemberId && !(await sql`select 1 from fund_members where id = ${linkedMemberId}`).length) {
     throw new HttpError(400, 'العضو المرتبط غير موجود');
