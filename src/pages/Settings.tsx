@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import {
   Building2,
+  Coins,
   ImagePlus,
   Info,
   RefreshCw,
@@ -12,7 +13,7 @@ import {
 import { api, apiErrorMessage, fileUrl } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useToast } from '../lib/toast';
-import { formatDateTime, money } from '../lib/format';
+import { formatDateTime, money, moneyIn, secondaryAmount } from '../lib/format';
 import {
   Alert,
   Badge,
@@ -43,6 +44,9 @@ export function SettingsPage() {
     logo_file: null as string | null,
     default_monthly_fee: '1000',
     currency: 'ريال يمني',
+    secondary_currency: 'ريال سعودي',
+    exchange_rate: '0',
+    secondary_enabled: false,
     opening_balance: '0',
     allow_signups: true,
     auto_dues_enabled: true,
@@ -63,6 +67,9 @@ export function SettingsPage() {
         logo_file: payload.settings.logo_file,
         default_monthly_fee: String(payload.settings.default_monthly_fee),
         currency: payload.settings.currency,
+        secondary_currency: payload.settings.secondary_currency ?? 'ريال سعودي',
+        exchange_rate: String(payload.settings.exchange_rate ?? 0),
+        secondary_enabled: Boolean(payload.settings.secondary_enabled),
         opening_balance: String(payload.settings.opening_balance),
         allow_signups: Boolean(payload.settings.allow_signups),
         auto_dues_enabled: payload.settings.auto_dues_enabled !== false,
@@ -97,6 +104,9 @@ export function SettingsPage() {
         logo_file: form.logo_file,
         default_monthly_fee: monthlyFee,
         currency: form.currency.trim(),
+        secondary_currency: form.secondary_currency.trim() || 'ريال سعودي',
+        exchange_rate: Number(form.exchange_rate) || 0,
+        secondary_enabled: form.secondary_enabled,
         opening_balance: parseAmount(form.opening_balance),
         allow_signups: form.allow_signups,
         auto_dues_enabled: form.auto_dues_enabled,
@@ -213,6 +223,69 @@ export function SettingsPage() {
             <Alert tone="warning">
               تعديل الرصيد الافتتاحي يعيد احتساب الرصيد النقدي الفعلي. يُستخدم عادةً مرة واحدة عند بداية
               التشغيل أو بعد جرد رسمي موثق. كل تعديل يُسجل في سجل التدقيق.
+            </Alert>
+          </Card>
+
+          <Card>
+            <CardHeader title="العملة الثانية وسعر الصرف" subtitle="إظهار مقابل تقريبي بالريال السعودي أو أي عملة أخرى بجانب المبالغ" icon={<Coins size={19} />} />
+            <div className="settings-switches">
+              <label className="setting-row">
+                <div>
+                  <strong>إظهار المبالغ بالعملة الثانية</strong>
+                  <span>عند التفعيل يظهر المقابل التقريبي أسفل المبلغ في السندات وكشوف الحساب والتقارير. تبقى كل القيود والحسابات بالعملة الأساسية.</span>
+                </div>
+                <span className="switch-field">
+                  <input
+                    type="checkbox"
+                    checked={form.secondary_enabled}
+                    onChange={(event) => setForm((current) => ({ ...current, secondary_enabled: event.target.checked }))}
+                  />
+                  <span className="switch" />
+                </span>
+              </label>
+            </div>
+            <div className="form-grid two">
+              <Field label="اسم العملة الثانية" required hint="مثال: ريال سعودي">
+                <TextInput
+                  value={form.secondary_currency}
+                  onChange={(event) => setForm((current) => ({ ...current, secondary_currency: event.target.value }))}
+                  required
+                />
+              </Field>
+              <Field
+                label="سعر الصرف"
+                required
+                hint={`كم ${form.currency || 'ريال يمني'} يساوي 1 ${form.secondary_currency || 'ريال سعودي'}؟ مثال: 400`}
+              >
+                <TextInput
+                  type="number"
+                  min={0}
+                  step="0.0001"
+                  dir="ltr"
+                  value={form.exchange_rate}
+                  onChange={(event) => setForm((current) => ({ ...current, exchange_rate: event.target.value }))}
+                  required
+                />
+              </Field>
+            </div>
+            <div className="financial-preview">
+              <span>معاينة سعر الصرف</span>
+              <strong>
+                {money(5000)} ≈{' '}
+                {moneyIn(
+                  secondaryAmount(5000, Number(form.exchange_rate)),
+                  form.secondary_currency || 'ريال سعودي'
+                )}
+              </strong>
+              <small>
+                {Number(form.exchange_rate) > 0
+                  ? `1 ${form.secondary_currency || 'ريال سعودي'} = ${moneyIn(Number(form.exchange_rate), form.currency || 'ريال يمني')}`
+                  : 'أدخل سعر الصرف لتفعيل العرض بالعملة الثانية'}
+              </small>
+            </div>
+            <Alert tone="info">
+              سعر الصرف يُحدَّث يدوياً من هنا ولا يُجلب تلقائياً. عند تغييره تتغير قيمة العرض فقط،
+              ولا تتغير المبالغ المسجلة أو الأرصدة. حدّثه عند تغير السوق ووثّق التغيير في سجل التدقيق.
             </Alert>
           </Card>
 

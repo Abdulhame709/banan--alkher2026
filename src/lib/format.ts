@@ -25,6 +25,32 @@ export function money(value: number | null | undefined, withCurrency = true): st
   return withCurrency ? `${text} ${CURRENCY_SHORT}` : text;
 }
 
+const decimalFormatter = new Intl.NumberFormat('en-US', {
+  maximumFractionDigits: 2,
+  minimumFractionDigits: 0,
+});
+
+/** Converts a primary-currency amount into the secondary currency. */
+export function secondaryAmount(value: number | null | undefined, rate: number | null | undefined): number {
+  const amount = Number(value) || 0;
+  const exchangeRate = Number(rate) || 0;
+  if (exchangeRate <= 0) return 0;
+  return amount / exchangeRate;
+}
+
+/** Formats an amount in any currency name, using two decimals when needed. */
+export function moneyIn(
+  value: number | null | undefined,
+  currencyName: string,
+  withCurrency = true
+): string {
+  const amount = Number(value) || 0;
+  const text = Number.isInteger(amount)
+    ? formatNumber(amount)
+    : decimalFormatter.format(amount);
+  return withCurrency ? `${text} ${currencyName}` : text;
+}
+
 /** All user-facing dates are Hijri. */
 export function formatDate(value: string | null | undefined): string {
   return formatHijriDate(value);

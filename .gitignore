@@ -40,5 +40,8 @@ supabase/.branches/
 # Cloudflare Wrangler temporary files
 .wrangler/
 
+# local notes that may contain tokens
+معرف كلود.txt
+
 # test output
 coverage/

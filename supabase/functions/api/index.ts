@@ -264,6 +264,16 @@ function oneOf(value: unknown, allowed: string[], { name = 'القيمة' } = {}
   return String(value);
 }
 
+/** Decimal number with up to four fractional digits (used for exchange rates). */
+function decimal(value: unknown, { name = 'القيمة', min = 0, max = 1_000_000 } = {}) {
+  if (value === null || value === undefined || value === '') return 0;
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new HttpError(400, `${name} غير صالح`);
+  if (number < min) throw new HttpError(400, `${name} يجب أن يكون أكبر من أو يساوي ${min}`);
+  if (number > max) throw new HttpError(400, `${name} أكبر من الحد المسموح`);
+  return Math.round(number * 10000) / 10000;
+}
+
 function intRange(value: unknown, min: number, max: number, { name = 'القيمة' } = {}) {
   const number = Number(value);
   if (!Number.isInteger(number) || number < min || number > max) {
@@ -770,6 +780,9 @@ async function publicSettings() {
       ? `${SUPABASE_URL}/functions/v1/api/logo?forceFunctionRegion=${FUNCTION_REGION}&v=${encodeURIComponent(settings.updated_at)}`
       : null,
     currency: settings.currency,
+    secondary_currency: settings.secondary_currency ?? 'ريال سعودي',
+    exchange_rate: Number(settings.exchange_rate ?? 0),
+    secondary_enabled: Boolean(settings.secondary_enabled),
     default_monthly_fee: Number(settings.default_monthly_fee),
     allow_signups: Boolean(settings.allow_signups),
     auto_dues_enabled: Boolean(settings.auto_dues_enabled),
@@ -991,6 +1004,7 @@ async function cashLedger(from: string, to: string) {
              when 'subscription' then 'سداد اشتراك شهري'
              when 'donation' then 'تبرع عام'
              else 'إيراد آخر' end) as description,
+           (select count(*) from fund_receipt_allocations a where a.receipt_id = r.id) as allocation_count,
            r.amount, r.payment_method, r.created_at
       from fund_receipts r
       left join fund_members m on m.id = r.member_id
@@ -1011,7 +1025,9 @@ async function cashLedger(from: string, to: string) {
       kind: 'receipt',
       date: row.date,
       reference: `REC-${String(row.receipt_no).padStart(4, '0')}`,
-      description: row.description,
+      description: row.receipt_type === 'subscription' && Number(row.allocation_count) > 1
+        ? 'سداد اشتراكات (عدة أشهر)'
+        : row.description,
       party: row.party,
       receipt_type: row.receipt_type,
       payment_method: row.payment_method,
@@ -3381,7 +3397,18 @@ app.get('/reports/member-movements', async (c) => {
       and due_month between ${from} and ${to}
     order by due_month asc`;
   const payments = await sql`select id, receipt_no, receipt_type, receipt_date, amount, payment_method,
-      notes, subscription_id
+      notes, subscription_id,
+      coalesce((
+        select json_agg(json_build_object(
+                 'due_month', s.due_month,
+                 'hijri_year', s.hijri_year,
+                 'hijri_month', s.hijri_month,
+                 'amount', a.amount
+               ) order by s.due_month)
+          from fund_receipt_allocations a
+          join fund_subscriptions s on s.id = a.subscription_id
+         where a.receipt_id = fund_receipts.id
+      ), '[]'::json) as allocations
     from fund_receipts where member_id = ${memberId}
       and receipt_date between ${from} and ${to}
     order by receipt_date asc, receipt_no asc`;
@@ -3403,15 +3430,26 @@ app.get('/reports/member-movements', async (c) => {
     });
   }
   for (const payment of payments) {
+    const covered = Array.isArray(payment.allocations) ? payment.allocations : [];
+    const coveredMonths = covered.map((row: any) => row.hijri_year && row.hijri_month
+      ? hijriMonthLabel(hijriMonthKey(Number(row.hijri_year), Number(row.hijri_month)))
+      : monthLabel(String(row.due_month).slice(0, 7)));
+    const description = payment.receipt_type === 'subscription'
+      ? (covered.length > 1
+        ? `سداد اشتراكات (${covered.length} أشهر)`
+        : 'سداد اشتراك شهري')
+      : (payment.receipt_type === 'donation' ? 'تبرع' : 'إيراد آخر');
     movements.push({
       id: `payment-${payment.id}`,
       date: payment.receipt_date,
       kind: 'payment',
       reference: `REC-${String(payment.receipt_no).padStart(4, '0')}`,
-      description: payment.receipt_type === 'subscription' ? 'سداد اشتراك شهري' : (payment.receipt_type === 'donation' ? 'تبرع' : 'إيراد آخر'),
+      description,
       debit: 0,
       credit: round2(payment.amount),
       subscription_id: payment.subscription_id,
+      months_covered: covered.length,
+      covered_months: coveredMonths,
       status: 'paid',
     });
   }
@@ -3912,6 +3950,16 @@ app.patch('/settings', async (c) => {
     ? Number(current.default_monthly_fee)
     : amount(body.default_monthly_fee, { name: 'الاشتراك الشهري الافتراضي', min: 0 });
   const currency = str(body?.currency ?? current.currency, { name: 'العملة', required: true, max: 40 });
+  const secondaryCurrency = str(
+    body?.secondary_currency ?? current.secondary_currency ?? 'ريال سعودي',
+    { name: 'العملة الثانية', required: true, max: 40 }
+  );
+  const exchangeRate = body?.exchange_rate === undefined
+    ? Number(current.exchange_rate ?? 0)
+    : decimal(body.exchange_rate, { name: 'سعر الصرف', min: 0, max: 1_000_000 });
+  const secondaryEnabled = body?.secondary_enabled === undefined
+    ? Boolean(current.secondary_enabled)
+    : bool(body.secondary_enabled, false);
   let openingBalance = Number(current.opening_balance);
   if (body?.opening_balance !== undefined) {
     openingBalance = Number(body.opening_balance);
@@ -3952,7 +4000,9 @@ app.patch('/settings', async (c) => {
 
   await sql.begin(async (tx) => {
     await tx`update fund_settings set fund_name = ${fundName}, logo_url = ${logoFile},
-      default_monthly_fee = ${defaultFee}, currency = ${currency}, opening_balance = ${openingBalance},
+      default_monthly_fee = ${defaultFee}, currency = ${currency},
+      secondary_currency = ${secondaryCurrency}, exchange_rate = ${exchangeRate},
+      secondary_enabled = ${secondaryEnabled}, opening_balance = ${openingBalance},
       allow_self_approval_demo = ${selfApproval}, allow_signups = ${allowSignups},
       auto_dues_enabled = ${autoDues}, cash_alert_threshold = ${cashAlertThreshold},
       commitment_alert_percent = ${commitmentAlertPercent},
@@ -3960,7 +4010,7 @@ app.patch('/settings', async (c) => {
       updated_at = now()
       where id = 'fund'`;
     await audit(tx, user, 'تحديث إعدادات الصندوق', 'settings', 'fund',
-      `الاسم: ${fundName} — الاشتراك: ${defaultFee} — الرصيد الافتتاحي: ${openingBalance} — الاستحقاقات التلقائية: ${autoDues ? 'مفعلة' : 'معطلة'} — تنبيهات: نقدي ${cashAlertThreshold}، التزامات ${commitmentAlertPercent}%، اعتماد ${approvalAlertDays} أيام، تذكير يوم ${reminderDay}`);
+      `الاسم: ${fundName} — الاشتراك: ${defaultFee} — الرصيد الافتتاحي: ${openingBalance} — الاستحقاقات التلقائية: ${autoDues ? 'مفعلة' : 'معطلة'} — العملة الثانية: ${secondaryEnabled ? `${secondaryCurrency} (1 = ${exchangeRate})` : 'معطلة'} — تنبيهات: نقدي ${cashAlertThreshold}، التزامات ${commitmentAlertPercent}%، اعتماد ${approvalAlertDays} أيام، تذكير يوم ${reminderDay}`);
   });
 
   return c.json({ settings: protocolSettings(await getSettings()) });

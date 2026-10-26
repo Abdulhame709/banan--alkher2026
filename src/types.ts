@@ -69,6 +69,9 @@ export interface PublicSettings {
   fund_name: string;
   logo_url: string | null;
   currency: string;
+  secondary_currency: string;
+  exchange_rate: number;
+  secondary_enabled: boolean;
   default_monthly_fee: number;
   allow_signups: boolean;
   auto_dues_enabled: boolean;

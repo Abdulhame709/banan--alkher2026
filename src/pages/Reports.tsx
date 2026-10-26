@@ -51,6 +51,7 @@ import {
 import { HijriDateInput } from '../components/HijriInputs';
 import { currentHijriYear, fromHijri } from '../lib/hijri';
 import { ReportPrint } from '../components/PrintSheet';
+import { DualAmount } from '../components/DualAmount';
 import type { AnnualReport, CashLedger, Member } from '../types';
 
 type Tab = 'cash' | 'arrears' | 'donations' | 'disbursements' | 'member' | 'annual';
@@ -88,6 +89,8 @@ interface MemberMovement {
   credit: number;
   balance: number;
   status: string;
+  months_covered?: number;
+  covered_months?: string[];
 }
 
 interface MemberStatement {
@@ -559,10 +562,10 @@ export function ReportsPage() {
                   <p>يشمل المقبوضات والمصروفات المدفوعة فقط — بدون المتأخرات غير المحصلة.</p>
                 </div>
                 <div className="report-head-metrics">
-                  <div><span>رصيد افتتاحي</span><strong>{money(cash.opening_balance)}</strong></div>
-                  <div><span>وارد</span><strong className="text-emerald">{money(cash.total_in)}</strong></div>
-                  <div><span>صادر</span><strong className="text-gold">{money(cash.total_out)}</strong></div>
-                  <div><span>رصيد ختامي</span><strong>{money(cash.closing_balance)}</strong></div>
+                  <div><span>رصيد افتتاحي</span><strong><DualAmount value={cash.opening_balance} inline /></strong></div>
+                  <div><span>وارد</span><strong className="text-emerald"><DualAmount value={cash.total_in} inline /></strong></div>
+                  <div><span>صادر</span><strong className="text-gold"><DualAmount value={cash.total_out} inline /></strong></div>
+                  <div><span>رصيد ختامي</span><strong><DualAmount value={cash.closing_balance} inline /></strong></div>
                 </div>
               </div>
               {cash.movements.length === 0 ? (
@@ -881,10 +884,10 @@ export function ReportsPage() {
                     <p>رقم العضوية {memberStatement.member.member_no} — الفترة {formatDate(memberStatement.from)} إلى {formatDate(memberStatement.to)}</p>
                   </div>
                   <div className="report-head-metrics">
-                    <div><span>رصيد افتتاحي</span><strong>{money(memberStatement.opening_balance)}</strong></div>
-                    <div><span>استحقاقات الفترة</span><strong>{money(memberStatement.totals.dues)}</strong></div>
-                    <div><span>المسدد</span><strong className="text-emerald">{money(memberStatement.totals.paid)}</strong></div>
-                    <div><span>إجمالي المتأخرات</span><strong className="danger-text">{money(memberStatement.totals.arrears)}</strong></div>
+                    <div><span>رصيد افتتاحي</span><strong><DualAmount value={memberStatement.opening_balance} inline /></strong></div>
+                    <div><span>استحقاقات الفترة</span><strong><DualAmount value={memberStatement.totals.dues} inline /></strong></div>
+                    <div><span>المسدد</span><strong className="text-emerald"><DualAmount value={memberStatement.totals.paid} inline /></strong></div>
+                    <div><span>إجمالي المتأخرات</span><strong className="danger-text"><DualAmount value={memberStatement.totals.arrears} inline /></strong></div>
                   </div>
                 </div>
 
@@ -901,7 +904,12 @@ export function ReportsPage() {
                         <tr key={movement.id}>
                           <td className="muted">{formatDate(movement.date)}</td>
                           <td className="mono">{movement.reference || '—'}</td>
-                          <td>{movement.description}</td>
+                          <td>
+                            {movement.description}
+                            {movement.covered_months && movement.covered_months.length > 1 && (
+                              <small className="cell-sub">{movement.covered_months.join('، ')}</small>
+                            )}
+                          </td>
                           <td className="text-gold">{movement.debit ? money(movement.debit) : '—'}</td>
                           <td className="text-emerald">{movement.credit ? money(movement.credit) : '—'}</td>
                           <td className="amount-cell">{money(movement.balance)}</td>

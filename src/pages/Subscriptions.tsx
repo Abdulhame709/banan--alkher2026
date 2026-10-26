@@ -305,7 +305,7 @@ export function SubscriptionsPage() {
     <div className="page-stack">
       <PageHeader
         title="الاستحقاقات الشهرية"
-        subtitle="استحقاق شهري هجري تلقائي، سداد شهر واحد من القائمة، أو تحصيل مبلغ إجمالي لعدة أشهر من سندات القبض."
+        subtitle="استحقاق شهري هجري تلقائي، سداد شهر واحد من القائمة، أو سداد اشتراكات عدة أشهر من سندات القبض."
         actions={
           <>
             {capabilities?.addReceipts && (
@@ -314,7 +314,7 @@ export function SubscriptionsPage() {
                 icon={<ReceiptText size={17} />}
                 onClick={() => navigate('/receipts?new=1&type=subscription')}
               >
-                تحصيل عدة أشهر
+                سداد عدة أشهر
               </Button>
             )}
             {capabilities?.addSubscriptions && (

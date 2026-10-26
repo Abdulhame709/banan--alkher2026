@@ -47,6 +47,7 @@ import { MultiFileUpload } from '../components/MultiFileUpload';
 import { AttachmentLinks } from '../components/AttachmentLinks';
 import { SignatureModal } from '../components/SignaturePad';
 import { AmountInput, parseAmount } from '../components/AmountInput';
+import { DualAmount } from '../components/DualAmount';
 import { HijriDateInput } from '../components/HijriInputs';
 import { ReceiptVoucher } from '../components/PrintSheet';
 import type { Attachment, Member, Receipt, Subscription, UploadedAttachment } from '../types';
@@ -568,10 +569,12 @@ export function ReceiptsPage() {
                     </td>
                     <td>
                       <Badge tone={receipt.receipt_type === 'subscription' ? 'info' : receipt.receipt_type === 'donation' ? 'gold' : 'neutral'}>
-                        {RECEIPT_TYPE_LABELS[receipt.receipt_type]}
+                        {receipt.receipt_type === 'subscription' && !receipt.subscription_id
+                          ? 'سداد اشتراكات'
+                          : RECEIPT_TYPE_LABELS[receipt.receipt_type]}
                       </Badge>
                     </td>
-                    <td className="amount-cell">{money(receipt.amount)}</td>
+                    <td className="amount-cell"><DualAmount value={receipt.amount} /></td>
                     <td>
                       {receipt.is_restricted ? (
                         <span className="restricted-tag" title={receipt.restricted_purpose ?? ''}>
@@ -639,9 +642,10 @@ export function ReceiptsPage() {
         >
           <form id="receipt-form" onSubmit={submit} className="form-stack">
             {formError && <Alert tone="danger">{formError}</Alert>}
-            <Alert tone="info" title="تحصيل عدة أشهر">
-              اختر «تحصيل اشتراكات» ثم العضو. سيوزع النظام المبلغ تلقائياً على أقدم الأشهر غير المسددة،
-              ويمكن لسند واحد أن يغطي عدة أشهر (مثال: 5,000 لخمسة أشهر).
+            <Alert tone="info" title="سداد اشتراكات لعدة أشهر">
+              اختر نوع السند «سداد اشتراكات» ثم العضو. سيوزع النظام المبلغ تلقائياً على أقدم الأشهر
+              غير المسددة، ويمكن لسند واحد أن يغطي عدة أشهر (مثال: 5,000 لخمسة أشهر)، ويظهر كقيْد
+              واحد في كشف الحساب.
             </Alert>
             <div className="form-grid two">
               <Field label="نوع السند" required>
@@ -651,7 +655,7 @@ export function ReceiptsPage() {
                 >
                   <option value="donation">تبرع</option>
                   <option value="other">إيراد آخر</option>
-                  <option value="subscription">تحصيل اشتراكات (عدة أشهر)</option>
+                  <option value="subscription">سداد اشتراكات (عدة أشهر)</option>
                 </Select>
               </Field>
               <Field label="تاريخ السند (هجري)" required>

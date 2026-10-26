@@ -50,6 +50,7 @@ import {
   StatCard,
 } from '../components/ui';
 import { FundLogo } from '../components/Logo';
+import { DualAmount } from '../components/DualAmount';
 import {
   MemberStatementPrint,
   ReceiptVoucher,
@@ -204,7 +205,7 @@ export function DashboardPage() {
         <div className="banner-content">
           <span className="banner-kicker">الرصيد النقدي الفعلي المتاح</span>
           <div className="banner-value">
-            {money(position.cash_balance)}
+            <DualAmount value={position.cash_balance} inline />
           </div>
           <p>
             يشمل الرصيد الافتتاحي والمقبوضات الفعلية ناقص المصروفات المدفوعة، ولا يشمل
@@ -248,7 +249,7 @@ export function DashboardPage() {
       <section className="stats-grid">
         <StatCard
           label="الرصيد النقدي الفعلي"
-          value={money(position.cash_balance)}
+          value={<DualAmount value={position.cash_balance} />}
           hint="افتتاحي + مقبوضات − مصروفات مدفوعة"
           icon={<Wallet size={22} />}
           tone="emerald"

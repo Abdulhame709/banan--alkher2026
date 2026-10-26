@@ -10,10 +10,12 @@ import {
   formatDate,
   formatDateTime,
   money,
+  moneyIn,
   monthLabel,
   numberToArabicWords,
   PAYMENT_METHOD_LABELS,
   refReceipt,
+  secondaryAmount,
   subscriptionStatus,
 } from '../lib/format';
 import { FundLogo } from './Logo';
@@ -230,7 +232,7 @@ export function ReceiptVoucher({
         <div className="voucher-title-row">
           <div className="voucher-stamp">
             <span>سند قبض</span>
-            <small>{isMultiMonth ? 'تحصيل اشتراكات' : isSubscription ? 'تحصيل اشتراك' : isDonation ? 'إيراد تبرع' : 'إيراد'}</small>
+            <small>{isMultiMonth ? 'سداد اشتراكات' : isSubscription ? 'تحصيل اشتراك' : isDonation ? 'إيراد تبرع' : 'إيراد'}</small>
           </div>
           <div className="voucher-meta">
             <div><span>رقم السند</span><strong>{refReceipt(receipt.receipt_no)}</strong></div>
@@ -242,12 +244,17 @@ export function ReceiptVoucher({
         <div className="voucher-amount-banner">
           <span>المبلغ المستلم</span>
           <strong>{money(receipt.amount, false)} <small>{settings?.currency ?? 'ريال يمني'}</small></strong>
+          {settings?.secondary_enabled && Number(settings.exchange_rate) > 0 && (
+            <small className="voucher-secondary">
+              ≈ {moneyIn(secondaryAmount(receipt.amount, settings.exchange_rate), settings.secondary_currency || 'ريال سعودي')}
+            </small>
+          )}
         </div>
 
         <dl className="voucher-grid">
           <div><dt>استلمنا من</dt><dd>{party}</dd></div>
           <div><dt>{receipt.member_no ? 'رقم العضوية' : 'نوع الإيراد'}</dt><dd>{receipt.member_no || (isDonation ? 'تبرع' : 'إيراد آخر')}</dd></div>
-          <div><dt>نوع السند</dt><dd>{isDonation ? (receipt.is_restricted ? 'تبرع مخصص' : 'تبرع عام') : isMultiMonth ? 'اشتراكات متعددة الأشهر' : isSubscription ? 'اشتراك شهري' : 'إيراد آخر'}</dd></div>
+          <div><dt>نوع السند</dt><dd>{isDonation ? (receipt.is_restricted ? 'تبرع مخصص' : 'تبرع عام') : isMultiMonth ? 'سداد اشتراكات (عدة أشهر)' : isSubscription ? 'اشتراك شهري' : 'إيراد آخر'}</dd></div>
           <div><dt>الغرض / البيان</dt><dd>{receipt.restricted_purpose || (isMultiMonth ? 'سداد مستحقات اشتراكات متعددة (توزيع على أقدم الأشهر)' : isSubscription ? 'سداد استحقاق شهري' : isDonation ? 'تبرع عام لدعم أنشطة الصندوق' : 'إيراد متنوع')}</dd></div>
           {isMultiMonth && receipt.allocations?.length ? (
             <div className="span-2">
@@ -318,6 +325,11 @@ export function PaymentVoucher({
         <div className="voucher-amount-banner banner-gold">
           <span>المبلغ المصروف</span>
           <strong>{money(expense.amount, false)} <small>{settings?.currency ?? 'ريال يمني'}</small></strong>
+          {settings?.secondary_enabled && Number(settings.exchange_rate) > 0 && (
+            <small className="voucher-secondary">
+              ≈ {moneyIn(secondaryAmount(expense.amount, settings.exchange_rate), settings.secondary_currency || 'ريال سعودي')}
+            </small>
+          )}
         </div>
 
         <dl className="voucher-grid">
@@ -403,6 +415,10 @@ export function MemberStatementPrint({
   const totalPaid = subscriptions.reduce((sum, row) => sum + row.paid_amount, 0);
   const totalDue = subscriptions.reduce((sum, row) => sum + row.amount, 0);
   const arrears = totalDue - totalPaid;
+  const secondary = (amount: number) =>
+    settings?.secondary_enabled && Number(settings.exchange_rate) > 0
+      ? `≈ ${moneyIn(secondaryAmount(amount, settings.exchange_rate), settings.secondary_currency || 'ريال سعودي')}`
+      : null;
   return (
     <PrintPreview title={`كشف حساب العضو ${member.member_no}`} onClose={onClose}>
       <article className="print-sheet statement-sheet">
@@ -418,9 +434,9 @@ export function MemberStatementPrint({
         </dl>
 
         <div className="statement-summary">
-          <div><span>إجمالي المستحقات</span><strong>{money(totalDue)}</strong></div>
-          <div><span>إجمالي المسدد</span><strong className="text-emerald">{money(totalPaid)}</strong></div>
-          <div><span>المتأخرات</span><strong className="text-danger">{money(arrears)}</strong></div>
+          <div><span>إجمالي المستحقات</span><strong>{money(totalDue)}</strong>{secondary(totalDue) && <small className="dual-secondary">{secondary(totalDue)}</small>}</div>
+          <div><span>إجمالي المسدد</span><strong className="text-emerald">{money(totalPaid)}</strong>{secondary(totalPaid) && <small className="dual-secondary">{secondary(totalPaid)}</small>}</div>
+          <div><span>المتأخرات</span><strong className="text-danger">{money(arrears)}</strong>{secondary(arrears) && <small className="dual-secondary">{secondary(arrears)}</small>}</div>
         </div>
 
         <h3 className="print-subtitle">تفصيل الاستحقاقات الشهرية</h3>
@@ -483,7 +499,9 @@ export function MemberStatementPrint({
               <tr key={receipt.id}>
                 <td>{refReceipt(receipt.receipt_no)}</td>
                 <td>{formatDate(receipt.receipt_date)}</td>
-                <td>{receipt.receipt_type === 'subscription' ? 'اشتراك' : receipt.receipt_type === 'donation' ? 'تبرع' : 'أخرى'}</td>
+                <td>{receipt.receipt_type === 'subscription'
+                  ? (receipt.subscription_id ? 'اشتراك شهري' : 'سداد اشتراكات')
+                  : receipt.receipt_type === 'donation' ? 'تبرع' : 'أخرى'}</td>
                 <td>{money(receipt.amount, false)}</td>
                 <td>{PAYMENT_METHOD_LABELS[receipt.payment_method]}</td>
               </tr>

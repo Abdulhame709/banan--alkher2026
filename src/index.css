@@ -1461,6 +1461,26 @@ code {
   color: var(--ink);
   white-space: nowrap;
 }
+.dual-amount {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.3;
+}
+.dual-amount.dual-inline {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+}
+.dual-primary { font-weight: inherit; }
+.dual-secondary {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--slate-500);
+  direction: rtl;
+  white-space: nowrap;
+}
+.dual-amount.dual-inline .dual-secondary { font-size: 0.72rem; }
 .mono {
   font-family: 'Consolas', 'Cairo', monospace;
   font-size: 0.76rem;
@@ -3246,6 +3266,8 @@ code {
 .voucher-amount-banner span { font-size: 9pt; color: var(--emerald-800); font-weight: 600; }
 .voucher-amount-banner strong { font-size: 17pt; font-weight: 800; color: var(--emerald-900); letter-spacing: -0.01em; }
 .voucher-amount-banner strong small { font-size: 8pt; font-weight: 600; color: var(--emerald-700); }
+.voucher-secondary { font-size: 8pt; font-weight: 700; color: var(--emerald-800); white-space: nowrap; }
+.banner-gold .voucher-secondary { color: var(--gold-700); }
 .banner-gold { background: linear-gradient(120deg, #fffbeb, #fef3c7); border-color: #fde68a; }
 .banner-gold span { color: var(--gold-700); }
 .banner-gold strong { color: #92400e; }
