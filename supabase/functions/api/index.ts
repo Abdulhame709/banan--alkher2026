@@ -452,51 +452,71 @@ async function ensureDuesForMonth(
 ) {
   const dueMonth = fromHijri(month.year, month.month, 1);
   if (!dueMonth) throw new HttpError(400, 'تعذر تحويل الشهر الهجري إلى تاريخ ميلادي');
-  const members = memberIds && memberIds.length
-    ? await db`select id, full_name, monthly_fee from fund_members
-        where active = true and id = any(${memberIds})`
-    : await db`select id, full_name, monthly_fee from fund_members where active = true`;
-  let generated = 0;
-  let skipped = 0;
-  for (const member of members) {
-    if (Number(member.monthly_fee) <= 0) {
-      skipped += 1;
-      continue;
-    }
-    if (ignoreExclusions) {
-      // An explicit generate action is a deliberate request to recreate a due
-      // that was previously deleted manually.
-      await db`delete from fund_subscription_exclusions
-        where member_id = ${member.id}
-          and hijri_year = ${month.year} and hijri_month = ${month.month}`;
-    } else {
-      const excluded = await db`select 1 from fund_subscription_exclusions
-        where member_id = ${member.id}
-          and hijri_year = ${month.year} and hijri_month = ${month.month}
-        limit 1`;
-      if (excluded.length) {
-        skipped += 1;
-        continue;
-      }
-    }
-    const existing = await db`select id from fund_subscriptions
-      where member_id = ${member.id}
-        and ((hijri_year = ${month.year} and hijri_month = ${month.month}) or due_month = ${dueMonth})
-      limit 1`;
-    if (existing.length) {
-      await db`update fund_subscriptions
-        set hijri_year = ${month.year}, hijri_month = ${month.month}
-        where id = ${existing[0].id} and hijri_year is null`;
-      skipped += 1;
-      continue;
-    }
-    await db`insert into fund_subscriptions
-      (member_id, due_month, hijri_year, hijri_month, amount, paid_amount, status)
-      values (${member.id}, ${dueMonth}, ${month.year}, ${month.month},
-        ${Math.trunc(Number(member.monthly_fee))}, 0, 'unpaid')`;
-    generated += 1;
+  // Keep this operation set-based. The dashboard calls it on every load and
+  // the cron calls it for every active member; a per-member loop used to make
+  // the dashboard take ~38s with only 35 members because every query pays a
+  // pooler round trip.
+  const ids = memberIds && memberIds.length ? memberIds : null;
+
+  if (ignoreExclusions) {
+    // An explicit generate action is a deliberate request to recreate a due
+    // that was previously deleted manually.
+    await db`delete from fund_subscription_exclusions e
+      where e.hijri_year = ${month.year} and e.hijri_month = ${month.month}
+        and (${ids}::uuid[] is null or e.member_id = any(${ids}::uuid[]))`;
   }
-  return { generated, skipped, total: members.length, dueMonth };
+
+  const result = await db`
+    with target as (
+      select m.id, m.monthly_fee
+      from fund_members m
+      where m.active = true
+        and (${ids}::uuid[] is null or m.id = any(${ids}::uuid[]))
+    ),
+    eligible as (
+      select t.id, t.monthly_fee from target t where t.monthly_fee > 0
+    ),
+    updated as (
+      -- Older rows may have a due_month but no Hijri fields (for example
+      -- after a manual import). Fill them without a second round trip.
+      update fund_subscriptions s
+      set hijri_year = ${month.year}, hijri_month = ${month.month}
+      where s.hijri_year is null
+        and s.due_month = ${dueMonth}::date
+        and (${ids}::uuid[] is null or s.member_id = any(${ids}::uuid[]))
+      returning s.id
+    ),
+    existing as (
+      select distinct s.member_id
+      from fund_subscriptions s
+      join eligible e on e.id = s.member_id
+      where s.due_month = ${dueMonth}::date
+         or (s.hijri_year = ${month.year} and s.hijri_month = ${month.month})
+    ),
+    excluded as (
+      select distinct x.member_id
+      from fund_subscription_exclusions x
+      join eligible e on e.id = x.member_id
+      where x.hijri_year = ${month.year} and x.hijri_month = ${month.month}
+    ),
+    inserted as (
+      insert into fund_subscriptions
+        (member_id, due_month, hijri_year, hijri_month, amount, paid_amount, status)
+      select e.id, ${dueMonth}::date, ${month.year}, ${month.month},
+        trunc(e.monthly_fee)::int, 0, 'unpaid'
+      from eligible e
+      where not exists (select 1 from existing x where x.member_id = e.id)
+        and not exists (select 1 from excluded x where x.member_id = e.id)
+      on conflict (member_id, due_month) do nothing
+      returning id
+    )
+    select
+      (select count(*)::int from target) as total,
+      (select count(*)::int from inserted) as generated`;
+
+  const total = Number(result[0]?.total ?? 0);
+  const generated = Number(result[0]?.generated ?? 0);
+  return { generated, skipped: Math.max(0, total - generated), total, dueMonth };
 }
 
 async function ensureCurrentMonthDues(db: any) {
@@ -752,18 +772,22 @@ async function nextSequence(db: any, name: string) {
 }
 
 async function cashPosition(db: any = sql) {
-  const settings = await getSettings(db);
-  const receipts = await db`select coalesce(sum(amount), 0) as total from fund_receipts`;
-  const paidExpenses = await db`select coalesce(sum(amount), 0) as total from fund_expense_requests where status = 'paid'`;
-  const committed = await db`select coalesce(sum(amount), 0) as total from fund_expense_requests where status = 'approved'`;
-  const cash = round2(Number(settings.opening_balance) + Number(receipts[0].total) - Number(paidExpenses[0].total));
+  // One round trip instead of four. This endpoint is on the dashboard hot path
+  // and the transaction pooler makes every extra query expensive.
+  const rows = await db`select
+      coalesce((select opening_balance from fund_settings where id = 'fund'), 0) as opening_balance,
+      coalesce((select sum(amount) from fund_receipts), 0) as total_receipts,
+      coalesce((select sum(amount) from fund_expense_requests where status = 'paid'), 0) as total_paid_expenses,
+      coalesce((select sum(amount) from fund_expense_requests where status = 'approved'), 0) as committed_pending`;
+  const row = rows[0];
+  const cash = round2(Number(row.opening_balance) + Number(row.total_receipts) - Number(row.total_paid_expenses));
   return {
-    opening_balance: round2(settings.opening_balance),
-    total_receipts: round2(receipts[0].total),
-    total_paid_expenses: round2(paidExpenses[0].total),
+    opening_balance: round2(row.opening_balance),
+    total_receipts: round2(row.total_receipts),
+    total_paid_expenses: round2(row.total_paid_expenses),
     cash_balance: cash,
-    committed_pending: round2(committed[0].total),
-    net_available: round2(cash - Number(committed[0].total)),
+    committed_pending: round2(row.committed_pending),
+    net_available: round2(cash - Number(row.committed_pending)),
   };
 }
 
@@ -772,7 +796,8 @@ async function arrearsPosition(db: any = sql) {
       coalesce(sum(amount - paid_amount), 0) as arrears,
       coalesce(sum(case when status <> 'paid' then 1 else 0 end), 0) as open_months,
       coalesce(sum(amount), 0) as accrued,
-      coalesce(sum(paid_amount), 0) as collected
+      coalesce(sum(paid_amount), 0) as collected,
+      count(distinct case when status <> 'paid' then member_id end) as members_in_arrears
     from fund_subscriptions`;
   const row = rows[0];
   return {
@@ -780,17 +805,20 @@ async function arrearsPosition(db: any = sql) {
     open_months: Number(row.open_months),
     total_accrued: round2(row.accrued),
     total_collected: round2(row.collected),
+    members_in_arrears: Number(row.members_in_arrears),
   };
 }
 
-async function buildAlerts(db: any = sql) {
-  const settings = await getSettings(db);
-  const position = await cashPosition(db);
-  const arrears = await arrearsPosition(db);
-  const membersInArrears = Number((await db`select count(*) as count from (
-    select member_id from fund_subscriptions where status <> 'paid' group by member_id
-  ) x`)[0].count);
-  const pending = (await db`select count(*) as count,
+async function buildAlerts(
+  db: any = sql,
+  precomputed?: { settings?: any; position?: any; arrears?: any; pending?: any }
+) {
+  const settings = precomputed?.settings ?? await getSettings(db);
+  const position = precomputed?.position ?? await cashPosition(db);
+  const arrears = precomputed?.arrears ?? await arrearsPosition(db);
+  const membersInArrears = Number(arrears.members_in_arrears ?? 0);
+  const pending = precomputed?.pending ?? (await db`select count(*) as count,
+      coalesce(sum(amount), 0) as total,
       coalesce(max(extract(day from now() - created_at)), 0) as max_days
     from fund_expense_requests where status = 'pending'`)[0];
   const alerts: any[] = [];
@@ -1201,6 +1229,30 @@ app.get('/cron/reminders', async (c) => {
   });
 });
 
+app.get('/cron/backup', async (c) => {
+  const secret = Deno.env.get('CRON_SECRET') ?? '';
+  const provided = c.req.header('x-cron-secret') ?? c.req.query('secret') ?? '';
+  if (!secret || provided !== secret) throw new HttpError(401, 'مفتاح المهمة الدورية غير صالح');
+  const admin = (await sql`select user_id as id, full_name, email, role
+    from fund_user_profiles
+    where role = 'admin' and active = true
+    order by created_at asc
+    limit 1`)[0];
+  if (!admin) throw new HttpError(500, 'لا يوجد حساب مدير نشط لتنفيذ النسخة الاحتياطية');
+  const result = await createBackupSnapshot(admin);
+  return c.json({
+    ok: true,
+    backup: {
+      id: result.backup.id,
+      filename: result.backup.filename,
+      size_bytes: result.backup.size_bytes,
+      counts: result.backup.counts,
+      created_at: result.backup.created_at,
+    },
+    time: new Date().toISOString(),
+  });
+});
+
 
 app.get('/public/settings', async (c) => c.json({ settings: await publicSettings() }));
 
@@ -1427,11 +1479,51 @@ app.get('/dashboard', async (c) => {
   }
 
   requireCap(user, 'dashboard.view');
-  await ensureCurrentMonthDues(sql);
-  const position = await cashPosition();
-  const arrears = await arrearsPosition();
-  const revenue = await sql`select receipt_type, is_restricted, coalesce(sum(amount), 0) as total
-    from fund_receipts group by receipt_type, is_restricted`;
+  const hijriMonth = currentHijriMonth();
+  const dueMonth = fromHijri(hijriMonth.year, hijriMonth.month, 1);
+  if (!dueMonth) throw new HttpError(400, 'تعذر تحويل الشهر الهجري إلى تاريخ ميلادي');
+  const dashboardRows = await sql`select public.fund_dashboard_payload(
+    true, ${hijriMonth.year}, ${hijriMonth.month}, ${dueMonth}::date, ${todayISO().slice(0, 7)}
+  )::text as data`;
+  const data = JSON.parse(dashboardRows[0].data);
+  const settings = data.settings ?? {};
+  const rawPosition = data.position;
+  const position = {
+    opening_balance: round2(rawPosition.opening_balance),
+    total_receipts: round2(rawPosition.total_receipts),
+    total_paid_expenses: round2(rawPosition.total_paid_expenses),
+    cash_balance: round2(Number(rawPosition.opening_balance) + Number(rawPosition.total_receipts) - Number(rawPosition.total_paid_expenses)),
+    committed_pending: round2(rawPosition.committed_pending),
+    net_available: round2(
+      Number(rawPosition.opening_balance) + Number(rawPosition.total_receipts) -
+      Number(rawPosition.total_paid_expenses) - Number(rawPosition.committed_pending)
+    ),
+  };
+  const arrears = {
+    total_arrears: round2(data.arrears.total_arrears),
+    open_months: Number(data.arrears.open_months),
+    total_accrued: round2(data.arrears.total_accrued),
+    total_collected: round2(data.arrears.total_collected),
+    members_in_arrears: Number(data.arrears.members_in_arrears),
+  };
+  const revenue = data.revenue as any[];
+  const expensesByCategoryRows = data.expenses_by_category as any[];
+  const pending = data.pending as any[];
+  const recentReceipts = data.recent_receipts as any[];
+  const approved = data.approved as any[];
+  const pendingSummaryRow = {
+    count: Number(data.pending_summary.count),
+    total: round2(data.pending_summary.total),
+    max_days: Number(data.pending_summary.max_days),
+  };
+  const memberStatsRow = {
+    total: Number(data.member_stats.total),
+    active: Number(data.member_stats.active),
+    new_this_month: Number(data.member_stats.new_this_month),
+  };
+  const receiptTrend = data.receipt_trend as any[];
+  const expenseTrend = data.expense_trend as any[];
+
   const revenueBreakdown = { subscriptions: 0, general_donations: 0, restricted_donations: 0, other: 0 };
   for (const row of revenue) {
     if (row.receipt_type === 'subscription') revenueBreakdown.subscriptions += Number(row.total);
@@ -1440,54 +1532,21 @@ app.get('/dashboard', async (c) => {
     else revenueBreakdown.other += Number(row.total);
   }
 
-  const expensesByCategory = (await sql`select category, coalesce(sum(amount), 0) as total, count(*) as count
-    from fund_expense_requests where status = 'paid' group by category order by total desc`)
-    .map((row: any) => ({
-      ...row,
-      label: EXPENSE_CATEGORY_LABELS[row.category] ?? row.category,
-      total: round2(row.total),
-    }));
-
-  const pending = await sql`select e.*, p.full_name as created_by_name
-    from fund_expense_requests e
-    left join fund_user_profiles p on p.user_id = e.created_by
-    where e.status = 'pending' order by e.created_at desc limit 6`;
-
-  const pendingSummary = (await sql`select count(*) as count, coalesce(sum(amount), 0) as total
-    from fund_expense_requests where status = 'pending'`)[0];
-
-  const recentReceipts = await sql`select r.id, r.receipt_no, r.receipt_type, r.amount, r.receipt_date,
-      coalesce(m.full_name, r.donor_name, 'متبرع') as party, r.is_restricted
-    from fund_receipts r left join fund_members m on m.id = r.member_id
-    order by r.receipt_date desc, r.receipt_no desc limit 6`;
-
-  const approved = await sql`select e.id, e.request_no, e.beneficiary_name, e.amount, e.category, e.approval_count
-    from fund_expense_requests e where e.status = 'approved' order by e.created_at asc limit 5`;
-
-  const memberStats = (await sql`select count(*) as total,
-      coalesce(sum(case when active then 1 else 0 end), 0) as active,
-      coalesce(sum(case when to_char(joined_on, 'YYYY-MM') = ${todayISO().slice(0, 7)} then 1 else 0 end), 0) as new_this_month
-    from fund_members`)[0];
+  const expensesByCategory = expensesByCategoryRows.map((row: any) => ({
+    ...row,
+    label: EXPENSE_CATEGORY_LABELS[row.category] ?? row.category,
+    total: round2(row.total),
+  }));
 
   const months = lastMonths(6);
-  const receiptTrend = await sql`select to_char(receipt_date, 'YYYY-MM') as month, coalesce(sum(amount), 0) as total
-    from fund_receipts group by month`;
-  const expenseTrend = await sql`select to_char(disbursed_at at time zone 'Asia/Aden', 'YYYY-MM') as month,
-      coalesce(sum(amount), 0) as total
-    from fund_expense_requests where status = 'paid' group by month`;
   const receiptMap = new Map(receiptTrend.map((row: any) => [row.month, round2(row.total)]));
   const expenseMap = new Map(expenseTrend.map((row: any) => [row.month, round2(row.total)]));
 
   return c.json({
     restricted: false,
     position,
-    alerts: await buildAlerts(),
-    arrears: {
-      ...arrears,
-      members_in_arrears: Number((await sql`select count(*) as count from (
-        select member_id from fund_subscriptions where status <> 'paid' group by member_id
-      ) x`)[0].count),
-    },
+    alerts: await buildAlerts(sql, { settings, position, arrears, pending: pendingSummaryRow }),
+    arrears,
     revenue_breakdown: {
       subscriptions: round2(revenueBreakdown.subscriptions),
       general_donations: round2(revenueBreakdown.general_donations),
@@ -1496,13 +1555,17 @@ app.get('/dashboard', async (c) => {
     },
     expenses_by_category: expensesByCategory,
     pending_requests: pending,
-    pending_summary: { count: Number(pendingSummary.count), total: round2(pendingSummary.total) },
+    pending_summary: {
+      count: Number(pendingSummaryRow.count),
+      total: round2(pendingSummaryRow.total),
+      max_days: Number(pendingSummaryRow.max_days ?? 0),
+    },
     approved_requests: approved,
     recent_receipts: recentReceipts,
     members: {
-      total: Number(memberStats.total ?? 0),
-      active: Number(memberStats.active ?? 0),
-      new_this_month: Number(memberStats.new_this_month ?? 0),
+      total: Number(memberStatsRow.total ?? 0),
+      active: Number(memberStatsRow.active ?? 0),
+      new_this_month: Number(memberStatsRow.new_this_month ?? 0),
     },
     trend: months.map((month) => ({
       month,

@@ -6,6 +6,7 @@ import { Layout } from './components/Layout';
 import { Emblem } from './components/Logo';
 import { Button, EmptyState } from './components/ui';
 import { LoginPage } from './pages/Login';
+import { DiagnosticsPage } from './pages/Diagnostics';
 import { DashboardPage } from './pages/Dashboard';
 import { MembersPage } from './pages/Members';
 import { SubscriptionsPage } from './pages/Subscriptions';
@@ -103,6 +104,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/verify/:type/:token" element={<VerifyPage />} />
+      <Route path="/diagnostics" element={<DiagnosticsPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route
         element={

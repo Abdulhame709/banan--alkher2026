@@ -1,0 +1,85 @@
+name: Daily database backup
+
+on:
+  schedule:
+    # A daily logical snapshot in the private backup bucket, retained for 30
+    # days by the API. Run outside the busiest hours.
+    - cron: '23 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create backup snapshot
+        env:
+          API_BASE: ${{ secrets.VITE_API_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$API_BASE" ] || [ -z "$CRON_SECRET" ]; then
+            echo "VITE_API_BASE_URL or CRON_SECRET secret is missing"
+            exit 1
+          fi
+          curl --fail --silent --show-error --max-time 120 \
+            --retry 3 --retry-delay 10 \
+            -H "x-cron-secret: $CRON_SECRET" \
+            "$API_BASE/cron/backup"
+          echo "Backup snapshot created."
+
+      - name: Open incident issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'backup',
+              per_page: 1,
+            });
+            if (open.data.length) return;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Daily backup failed at ${new Date().toISOString()}`,
+              labels: ['backup'],
+              body: [
+                'The scheduled logical backup could not be created.',
+                '',
+                `Workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                '',
+                'Check the Edge Function logs, the private backup bucket, and the service-role secret.',
+              ].join('\n'),
+            });
+
+      - name: Close backup issue after recovery
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'backup',
+              per_page: 10,
+            });
+            for (const issue of open.data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Daily backup recovered at ${new Date().toISOString()}.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+            }

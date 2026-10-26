@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
   BadgeCheck,
@@ -323,6 +323,9 @@ export function LoginPage() {
 
           <footer className="auth-card-footer">
             <span>© {new Date().getFullYear()} صندوق بنان الخير للبنيان</span>
+            <Link to="/diagnostics" style={{ color: 'inherit', textDecoration: 'underline' }}>
+              فحص الاتصال
+            </Link>
             <span>الغدير – مقبنة – تعز</span>
           </footer>
         </div>

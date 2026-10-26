@@ -16,6 +16,8 @@ Excel، المرفقات المتعددة، التوقيع الإلكتروني 
 | Supabase | https://supabase.com/dashboard/project/vhyckuwhuhdyvhxyqdgt |
 
 > دليل الاستخدام خطوة بخطوة: [`docs/دليل-المستخدم.md`](docs/دليل-المستخدم.md)
+>
+> قائمة التحقق النهائية للإنتاج والأداء: [`docs/الإنتاج.md`](docs/الإنتاج.md)
 
 ---
 
@@ -156,6 +158,7 @@ npm run apk:sync      # build + npx cap sync android
 | `0006_phone_login.sql` | عمود `phone_login_enabled` وفهرس فريد للهاتف |
 | `0007_keepalive.sql` | جدول `fund_keepalive` ودالة `ping_keepalive()` |
 | `0008_phone_normalization.sql` | توحيد صيغ الهاتف اليمني بين الواجهة وقاعدة البيانات |
+| `0009_dashboard_rpc.sql` | دالة `fund_dashboard_payload()`: توليد الاستحقاق وجلب لوحة التحكم في استدعاء واحد |
 
 تطبيق الترحيلات عبر Supabase CLI:
 
@@ -313,6 +316,7 @@ cd android
 - من **الإعدادات → النسخ الاحتياطية → إنشاء نسخة الآن** (مدير النظام فقط).
 - تُحفظ النسخة في bucket خاص `fund-backups`، وتُسجّل في `fund_backups`.
 - يحتفظ النظام بآخر 30 نسخة ويحذف الأقدم.
+- `.github/workflows/daily-backup.yml` ينشئ نسخة تلقائية يومياً 02:23 UTC.
 - يمكن تنزيل أي نسخة من زر **تنزيل**.
 
 محتوى الملف:
@@ -434,9 +438,11 @@ scripts/
   generate-native-assets.mjs أيقونات/شاشات Capacitor
 android/                     مشروع Capacitor Android
 .github/workflows/           deploy-pages.yml + build-apk.yml + keep-alive.yml
+                             + uptime.yml + daily-backup.yml
 docs/دليل-المستخدم.md
 docs/استعادة-النسخة.md
 docs/التشغيل-الدائم.md
+docs/الإنتاج.md
 ```
 
 ---
@@ -450,7 +456,11 @@ docs/التشغيل-الدائم.md
   - يطلب `POST /rest/v1/rpc/ping_keepalive` مباشرةً لتسجيل نبضة في القاعدة.
   - يطلب `/cron/dues` بالسر `CRON_SECRET` لإنشاء استحقاق الشهر الحالي
     وتشغيل تذكير نهاية الشهر الهجري.
-- يمكن تشغيله يدوياً من **Actions → Keep-alive and monthly dues → Run workflow**.
+- `.github/workflows/uptime.yml` يفحص الصحة **كل 15 دقيقة**، ويفتح Issue عند
+  الفشل ويغلقه بعد التعافي.
+- `.github/workflows/daily-backup.yml` ينشئ **نسخة احتياطية يومية** ويحتفظ
+  بآخر 30 نسخة.
+- يمكن تشغيل أي workflow يدوياً من تبويب **Actions → Run workflow**.
 - GitHub قد يؤخر المهام المجدولة أو يوقفها بعد خمول طويل؛ لذلك أضف مراقباً
   خارجياً (UptimeRobot أو cron-job.org) كل 5 دقائق.
 - التفاصيل الكاملة: [`docs/التشغيل-الدائم.md`](docs/التشغيل-الدائم.md).
