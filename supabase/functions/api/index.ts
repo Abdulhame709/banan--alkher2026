@@ -1197,6 +1197,9 @@ app.use('*', async (c, next) => {
 app.get('/health', async (c) => {
   let db = false;
   if (c.req.query('db') === '1') {
+    const forwarded = c.req.header('x-forwarded-for') ?? '';
+    const ip = forwarded.split(',')[0].trim() || c.req.header('cf-connecting-ip') || 'unknown';
+    await rateLimit(`health:${ip}`, 120, 60);
     await sql`select 1`;
     db = true;
   }
