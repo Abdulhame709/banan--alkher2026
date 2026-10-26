@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Banknote,
   CalendarClock,
@@ -55,6 +55,7 @@ export function SubscriptionsPage() {
   const { capabilities } = useAuth();
   const realtimeVersion = useRealtimeVersion();
   const toast = useToast();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [month, setMonth] = useState(currentHijriMonthKey());
   const [status, setStatus] = useState<'all' | 'unpaid' | 'partial' | 'paid'>(
@@ -304,9 +305,18 @@ export function SubscriptionsPage() {
     <div className="page-stack">
       <PageHeader
         title="الاستحقاقات الشهرية"
-        subtitle="استحقاق شهري هجري تلقائي، سداد كامل الشهر فقط، وإمكانية التوليد الجماعي لفترة هجرية."
+        subtitle="استحقاق شهري هجري تلقائي، سداد شهر واحد من القائمة، أو تحصيل مبلغ إجمالي لعدة أشهر من سندات القبض."
         actions={
           <>
+            {capabilities?.addReceipts && (
+              <Button
+                variant="secondary"
+                icon={<ReceiptText size={17} />}
+                onClick={() => navigate('/receipts?new=1&type=subscription')}
+              >
+                تحصيل عدة أشهر
+              </Button>
+            )}
             {capabilities?.addSubscriptions && (
               <Button
                 variant="secondary"

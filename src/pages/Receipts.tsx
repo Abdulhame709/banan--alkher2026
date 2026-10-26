@@ -77,7 +77,7 @@ export function ReceiptsPage() {
   const [signingReceipt, setSigningReceipt] = useState<Receipt | null>(null);
   const [savingSignature, setSavingSignature] = useState(false);
   const [form, setForm] = useState({
-    receipt_type: 'donation',
+    receipt_type: searchParams.get('type') === 'subscription' ? 'subscription' : 'donation',
     member_id: '',
     donor_name: '',
     amount: '',
@@ -138,6 +138,13 @@ export function ReceiptsPage() {
   useEffect(() => {
     load();
     if (searchParams.get('new') === '1' && capabilities?.addReceipts) {
+      if (searchParams.get('type') === 'subscription') {
+        setForm((current) => ({
+          ...current,
+          receipt_type: 'subscription',
+          member_id: searchParams.get('member') ?? current.member_id,
+        }));
+      }
       setOpen(true);
       setSearchParams({}, { replace: true });
     }
