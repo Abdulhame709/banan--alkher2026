@@ -10,9 +10,10 @@ Excel، المرفقات المتعددة، التوقيع الإلكتروني 
 
 | الخدمة | الرابط |
 |---|---|
-| نسخة الويب (تعمل بدون VPN) | https://banan-fund.pool-wave.workers.dev/ |
-| نسخة الويب (GitHub Pages — قد تُحجب) | https://walid19-89.github.io/banan--alkher2026/ |
-| فحص الوصول المباشر | https://banan-fund.pool-wave.workers.dev/ping.txt |
+| نسخة الويب (تعمل بدون VPN) | https://walid19-89.github.io/banan--alkher2026/ |
+| فحص الوصول المباشر | https://walid19-89.github.io/banan--alkher2026/ping.txt |
+| نسخة احتياطية (Cloudflare Worker — قد تُحجب) | https://banan-fund.pool-wave.workers.dev/ |
+| فحص Supabase | https://vhyckuwhuhdyvhxyqdgt.supabase.co/functions/v1/api/health |
 | تطبيق الأندرويد (APK) | https://github.com/walid19-89/banan--alkher2026/releases |
 | الكود | https://github.com/walid19-89/banan--alkher2026 |
 | Supabase | https://supabase.com/dashboard/project/vhyckuwhuhdyvhxyqdgt |
@@ -257,29 +258,35 @@ curl "https://vhyckuwhuhdyvhxyqdgt.supabase.co/functions/v1/api/health" `
 - Service Worker يحدّث نفسه تلقائياً. بعد نشر جديد، حدّث الصفحة مرة واحدة إن ظهرت
   نسخة قديمة.
 
-### إذا كان `github.io` محجوباً — Cloudflare Worker (مفعّل)
+### الاستضافة الأساسية — GitHub Pages (تعمل بدون VPN)
 
-بعض مزوّدي الإنترنت يحجبون `github.io` بينما يبقى `supabase.co` وGoogle متاحين.
-النسخة العامة التي تعمل بدون VPN حالياً:
+الرابط المعتمد حالياً هو:
 
-**<https://banan-fund.pool-wave.workers.dev/>**
+**<https://walid19-89.github.io/banan--alkher2026/>**
 
-- تُنشر تلقائياً عبر `.github/workflows/deploy-worker.yml` عند تغيير ملفات
-  الواجهة، أو يدوياً من تبويب Actions.
-- تحتاج السرّين `CLOUDFLARE_API_TOKEN` و`CLOUDFLARE_ACCOUNT_ID` في GitHub.
-- صلاحيات التوكن: **Workers Scripts: Edit** و**Account Settings: Read**.
-- ملف الإعداد: `wrangler.toml` — الاسم `banan-fund`، والمجلد `dist`.
+- تُنشر تلقائياً عبر `.github/workflows/deploy-pages.yml` عند كل دفع إلى `main`.
+- لا تحتاج أي سرّ إضافي؛ GitHub Pages يستخدم `GITHUB_TOKEN` المدمج.
 - للتحقق من وصول الشبكة: افتح
-  <https://banan-fund.pool-wave.workers.dev/ping.txt> — يجب أن يظهر
-  `banan-fund-ok`. إذا ظهر، فالشبكة تصل إلى الاستضافة.
+  <https://walid19-89.github.io/banan--alkher2026/ping.txt> — يجب أن يظهر
+  `banan-fund-ok`.
+- فحص Supabase من نفس الشبكة:
+  <https://vhyckuwhuhdyvhxyqdgt.supabase.co/functions/v1/api/health> — يجب أن
+  يظهر JSON فيه `"ok":true`.
 
-#### Cloudflare Pages (اختياري — رابط أجمل)
+### Cloudflare Worker (نسخة احتياطية)
 
-`https://banan-fund.pages.dev` ممكن أيضاً، لكنه يحتاج صلاحية إضافية في التوكن:
-**Cloudflare Pages: Edit** و**Account Settings: Read**. بعد تعديل التوكن شغّل
-workflow **Deploy to Cloudflare Pages** يدوياً (الملف
-`.github/workflows/deploy-cloudflare.yml`). أضف الرابط إلى `APP_ORIGINS` ثم
-أعد نشر Edge Function. حتى ذلك الحين، رابط Worker هو المعتمد.
+الرابط `https://banan-fund.pool-wave.workers.dev/` ما زال منشوراً، لكنه **محجوب
+من شبكة YemenNet بدون VPN**، لذلك لا تعتمد عليه كرابط رئيسي. يبقى كنسخة
+احتياطية إن كان `github.io` محجوباً لدى مستخدم آخر.
+
+- يُنشر عبر `.github/workflows/deploy-worker.yml`.
+- يحتاج `CLOUDFLARE_API_TOKEN` و`CLOUDFLARE_ACCOUNT_ID` في GitHub.
+- ملف الإعداد: `wrangler.toml` — الاسم `banan-fund`، والمجلد `dist`.
+
+#### Cloudflare Pages (اختياري — غير مطلوب)
+
+`https://banan-fund.pages.dev` غير منشور، ويحتاج صلاحية **Cloudflare Pages:
+Edit** في التوكن. لا حاجة إليه ما دام GitHub Pages يعمل.
 
 > لا تضع `service_role` أو كلمة مرور قاعدة البيانات في Cloudflare أو Vite.
 > الـ workflow يبني الموقع فقط، ولا يحتاج أي صلاحية على قاعدة البيانات.
@@ -287,8 +294,8 @@ workflow **Deploy to Cloudflare Pages** يدوياً (الملف
 ### حل بديل: Netlify أو Vercel
 
 نفس الفكرة: Build command `npm run build`، Output `dist`، ونفس متغيرات Vite.
-أضف رابط الموقع إلى `APP_ORIGINS`. استخدم أياً من هذه المنصات إذا كان
-`pages.dev` نفسه محجوباً في شبكتك.
+أضف رابط الموقع إلى `APP_ORIGINS`. استخدم أياً من هذه المنصات إذا تعطّل
+GitHub Pages في شبكة معينة.
 
 ---
 
@@ -331,19 +338,19 @@ npm run build
 npx cap sync android
 cd android
 ./gradlew assembleRelease `
-  -PbananVersionCode=19 `
-  -PbananVersionName=1.0.19
+  -PbananVersionCode=22 `
+  -PbananVersionName=1.0.22
 ```
 
 أو اترك GitHub Actions يبني وينشر تلقائياً عند الدفع إلى `main`. يظهر الإصدار في
 **Releases** باسم `apk-1.0.<رقم التشغيل>`.
 
-> الإصدار `1.0.19` موقّع بنفس keystore السابق، لذلك يُثبّت فوق النسخة القديمة
-> دون حذف البيانات. ثبّت `banan-fund-1.0.19.apk` قبل اختبار الوصول بدون VPN؛
-> النسخ القديمة قد تشير إلى مشروع Supabase القديم.
+> الإصدار `1.0.22` موقّع بنفس keystore السابق، لذلك يُثبّت فوق النسخة القديمة
+> دون حذف البيانات. روابط QR داخله تشير إلى GitHub Pages العامل بدون VPN.
+> النسخ القديمة قد تشير إلى مشروع Supabase القديم أو إلى Worker المحجوب.
 >
-> - الرابط: <https://github.com/walid19-89/banan--alkher2026/releases/download/apk-1.0.19/banan-fund-1.0.19.apk>
-> - SHA-256: `248C5C4545F320451E0E7436A10FB7345C41B814CCEAFAFFF4FAA0CAA60EBA0A`
+> - الرابط: <https://github.com/walid19-89/banan--alkher2026/releases/latest>
+> - بعد البناء تحقق من `SHA256SUMS.txt` المرفق مع الإصدار.
 
 > الطباعة تعمل بشكل أفضل في نسخة الويب. تصدير CSV في APK يستخدم قائمة المشاركة
 > (Filesystem + Share).

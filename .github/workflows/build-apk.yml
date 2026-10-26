@@ -52,7 +52,7 @@ jobs:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
           VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
-          VITE_PUBLIC_APP_URL: ${{ secrets.VITE_PUBLIC_APP_URL }}
+          VITE_PUBLIC_APP_URL: https://walid19-89.github.io/banan--alkher2026
           VITE_EDGE_REGION: ${{ secrets.VITE_EDGE_REGION }}
 
       - name: Sync Capacitor
@@ -102,6 +102,8 @@ jobs:
 
             - الإصدار: 1.0.${{ github.run_number }}
             - الحزمة: org.banan.fund
+            - رابط الويب: https://walid19-89.github.io/banan--alkher2026/
+            - جديد: سند قبض اشتراكات لعدة أشهر — أدخل المبلغ الإجمالي (مثل 5000) وسيوزعه النظام على أقدم الأشهر غير المسددة.
             - التثبيت: افتح ملف APK واسمح بالتثبيت من هذا المصدر.
             - المتطلبات: أندرويد 7.0 أو أحدث.
             - ملاحظة: للطباعة والتصدير الأفضل استخدام نسخة الويب (PWA) من المتصفح.
