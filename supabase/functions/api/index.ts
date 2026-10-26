@@ -280,6 +280,28 @@ function phoneDigits(value: unknown) {
   return digits;
 }
 
+// Supabase Auth requires an email address even for accounts that sign in by
+// phone. Phone-only accounts get an internal address that is never shown to
+// the user and is never used to send mail (the account is created confirmed).
+const PHONE_EMAIL_DOMAIN = 'phone.banan-fund.app';
+
+function syntheticPhoneEmail(phone: string | null) {
+  return `phone-${phoneDigits(phone)}@${PHONE_EMAIL_DOMAIN}`;
+}
+
+function isSyntheticPhoneEmail(email: unknown) {
+  return String(email ?? '').trim().toLowerCase().endsWith(`@${PHONE_EMAIL_DOMAIN}`);
+}
+
+function hasRealEmail(email: unknown) {
+  const value = String(email ?? '').trim();
+  return Boolean(value) && !isSyntheticPhoneEmail(value);
+}
+
+function publicEmail(email: unknown) {
+  return hasRealEmail(email) ? String(email).trim() : '';
+}
+
 async function ensurePhoneLoginAvailable(phone: string | null, excludeUserId?: string) {
   const digits = phoneDigits(phone);
   if (digits.length < 6 || digits.length > 15) {
@@ -691,10 +713,12 @@ async function requireUser(c: any) {
   if (!profile.active) throw new HttpError(403, 'هذا الحساب موقوف. تواصل مع مدير النظام');
 
   const permissions = effectivePermissions(profile.role, profile.permissions);
+  const authEmail = authUser.email ?? profile.email ?? '';
   return {
     id: profile.user_id,
     full_name: profile.full_name,
-    email: authUser.email ?? profile.email,
+    email: publicEmail(authEmail),
+    auth_email: authEmail,
     phone: profile.phone,
     role: profile.role,
     role_label: ROLE_LABELS[profile.role],
@@ -722,7 +746,7 @@ function requireRole(user: any, ...roles: string[]) {
 }
 
 function authPayload(user: any, settings: any) {
-  const { capabilities, ...publicUser } = user;
+  const { capabilities, auth_email: _authEmail, ...publicUser } = user;
   return { user: publicUser, capabilities, settings };
 }
 
@@ -1370,6 +1394,109 @@ app.get('/auth/me', async (c) => {
   return c.json(authPayload(user, await publicSettings()));
 });
 
+app.post('/auth/signup', async (c) => {
+  const forwarded = c.req.header('x-forwarded-for') ?? '';
+  const ip = forwarded.split(',')[0].trim() || c.req.header('cf-connecting-ip') || 'unknown';
+  await rateLimit(`signup:${ip}`, 5, 300);
+  const settings = await publicSettings();
+  if (!settings.allow_signups) {
+    throw new HttpError(403, 'التسجيل الذاتي مغلق حالياً. تواصل مع مدير النظام');
+  }
+  const body = await c.req.json().catch(() => ({}));
+  const fullName = str(body?.full_name, { name: 'الاسم الكامل', required: true, min: 3, max: 120 });
+  const emailInput = String(body?.email ?? '').trim().toLowerCase();
+  const phone = str(body?.phone, { name: 'رقم الهاتف', max: 30 });
+  const password = String(body?.password ?? '');
+  if (password.length < 8) throw new HttpError(400, 'كلمة المرور يجب أن تكون 8 أحرف على الأقل');
+
+  const hasEmail = Boolean(emailInput);
+  if (hasEmail && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailInput) || emailInput.length > 160)) {
+    throw new HttpError(400, 'البريد الإلكتروني غير صالح');
+  }
+  if (!hasEmail && !phone) {
+    throw new HttpError(400, 'أدخل بريداً إلكترونياً أو رقم هاتف للدخول');
+  }
+  if (phone) {
+    const digits = phoneDigits(phone);
+    if (digits.length < 6 || digits.length > 15) {
+      throw new HttpError(400, 'رقم الهاتف غير صالح. أدخل رقماً دولياً أو محلياً صحيحاً');
+    }
+    const duplicate = await sql`select 1 from fund_user_profiles
+      where phone is not null
+        and public.normalize_phone(phone) = ${digits}
+      limit 1`;
+    if (duplicate.length) throw new HttpError(409, 'رقم الهاتف مستخدم في حساب آخر');
+  }
+
+  const authEmail = hasEmail ? emailInput : syntheticPhoneEmail(phone);
+  const create = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
+    method: 'POST',
+    headers: {
+      apikey: SERVICE_KEY,
+      Authorization: `Bearer ${SERVICE_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      email: authEmail,
+      password,
+      email_confirm: true,
+      user_metadata: { full_name: fullName, phone },
+    }),
+  });
+  const created = await create.json().catch(() => ({}));
+  if (!create.ok) {
+    const message = String(created?.msg ?? created?.message ?? '').toLowerCase();
+    if (create.status === 422 || message.includes('already') || message.includes('registered')) {
+      throw new HttpError(409, 'يوجد حساب مسجل بهذا البريد الإلكتروني أو رقم الهاتف');
+    }
+    console.error('auth signup failed', create.status, created);
+    throw new HttpError(500, 'تعذر إنشاء الحساب');
+  }
+  const userId = created.id ?? created.user?.id;
+  if (!userId) throw new HttpError(500, 'تعذر إنشاء الحساب');
+
+  // The database trigger creates the pending profile. For a phone-only
+  // account, enable phone login immediately and keep the internal address
+  // hidden from the UI until an administrator approves the request.
+  await sql`update fund_user_profiles
+    set email = ${authEmail}, phone = ${phone},
+        phone_login_enabled = ${!hasEmail && Boolean(phone)}
+    where user_id = ${userId}`;
+
+  return c.json({
+    ok: true,
+    message: 'تم إرسال طلب التسجيل بنجاح. سيبقى الحساب معطلاً حتى توافق الإدارة عليه.',
+  }, 201);
+});
+
+app.post('/auth/change-password', async (c) => {
+  const user = await requireUser(c);
+  const body = await c.req.json().catch(() => ({}));
+  const currentPassword = String(body?.current_password ?? '');
+  const newPassword = String(body?.new_password ?? '');
+  if (!currentPassword) throw new HttpError(400, 'أدخل كلمة المرور الحالية');
+  if (newPassword.length < 8) throw new HttpError(400, 'كلمة المرور الجديدة يجب أن تكون 8 أحرف على الأقل');
+
+  const verify = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+    method: 'POST',
+    headers: { apikey: ANON_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: user.auth_email, password: currentPassword }),
+  });
+  if (!verify.ok) throw new HttpError(400, 'كلمة المرور الحالية غير صحيحة');
+  const update = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${user.id}`, {
+    method: 'PUT',
+    headers: {
+      apikey: SERVICE_KEY,
+      Authorization: `Bearer ${SERVICE_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ password: newPassword }),
+  });
+  if (!update.ok) throw new HttpError(500, 'تعذر تحديث كلمة المرور');
+  await audit(sql, user, 'تغيير كلمة المرور', 'user', user.id, 'تغيير كلمة المرور من الملف الشخصي');
+  return c.json({ ok: true });
+});
+
 app.post('/auth/login-phone', async (c) => {
   const forwarded = c.req.header('x-forwarded-for') ?? '';
   const ip = forwarded.split(',')[0].trim() || c.req.header('cf-connecting-ip') || 'unknown';
@@ -1380,7 +1507,7 @@ app.post('/auth/login-phone', async (c) => {
   if (digits.length < 6 || digits.length > 15 || !password) {
     throw new HttpError(401, 'رقم الهاتف أو كلمة المرور غير صحيحة');
   }
-  const rows = await sql`select p.*, u.email
+  const rows = await sql`select p.*, u.email as auth_email
     from fund_user_profiles p
     join auth.users u on u.id = p.user_id
     where p.phone_login_enabled = true
@@ -1400,7 +1527,7 @@ app.post('/auth/login-phone', async (c) => {
   const authResponse = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
     method: 'POST',
     headers: { apikey: ANON_KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: profile.email, password }),
+    body: JSON.stringify({ email: profile.auth_email, password }),
   });
   if (!authResponse.ok) {
     throw new HttpError(401, 'رقم الهاتف أو كلمة المرور غير صحيحة');
@@ -1431,7 +1558,7 @@ app.patch('/auth/me', async (c) => {
     const verify = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
       method: 'POST',
       headers: { apikey: ANON_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: user.email, password: currentPassword }),
+      body: JSON.stringify({ email: user.auth_email, password: currentPassword }),
     });
     if (!verify.ok) throw new HttpError(400, 'كلمة المرور الحالية غير صحيحة');
     const update = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${user.id}`, {
@@ -3402,6 +3529,8 @@ app.get('/users', async (c) => {
     users: users.map((row: any) => ({
       ...row,
       id: row.user_id,
+      email: publicEmail(row.email),
+      has_email: hasRealEmail(row.email),
       active: Boolean(row.active),
       role_label: ROLE_LABELS[row.role],
       permissions: effectivePermissions(row.role, row.permissions),
@@ -3418,16 +3547,25 @@ app.post('/users', async (c) => {
   requireRole(user, 'admin');
   const body = await c.req.json();
   const fullName = str(body?.full_name, { name: 'الاسم الكامل', required: true, min: 3, max: 120 });
-  const email = String(body?.email ?? '').trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 160) {
+  const emailInput = String(body?.email ?? '').trim().toLowerCase();
+  const hasEmail = Boolean(emailInput);
+  if (hasEmail && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailInput) || emailInput.length > 160)) {
     throw new HttpError(400, 'البريد الإلكتروني غير صالح');
   }
   const password = String(body?.password ?? '');
   if (password.length < 8) throw new HttpError(400, 'كلمة المرور يجب أن تكون 8 أحرف على الأقل');
   const role = oneOf(body?.role ?? 'member', ROLES, { name: 'الدور' });
   const phone = str(body?.phone, { name: 'رقم الهاتف', max: 30 });
-  const phoneLoginEnabled = bool(body?.phone_login_enabled, false);
+  if (!hasEmail && !phone) {
+    throw new HttpError(400, 'أدخل بريداً إلكترونياً أو رقم هاتف للدخول');
+  }
+  // A phone-only account must be able to sign in by phone. An email account
+  // may optionally enable phone login when a phone number is supplied.
+  const phoneLoginEnabled = hasEmail
+    ? bool(body?.phone_login_enabled, false)
+    : true;
   if (phoneLoginEnabled) await ensurePhoneLoginAvailable(phone);
+  const authEmail = hasEmail ? emailInput : syntheticPhoneEmail(phone);
   const linkedMemberId = str(body?.linked_member_id, { name: 'العضو المرتبط', max: 60 });
   if (linkedMemberId && !(await sql`select 1 from fund_members where id = ${linkedMemberId}`).length) {
     throw new HttpError(400, 'العضو المرتبط غير موجود');
@@ -3451,7 +3589,7 @@ app.post('/users', async (c) => {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      email,
+      email: authEmail,
       password,
       email_confirm: true,
       user_metadata: { full_name: fullName, phone },
@@ -3471,7 +3609,7 @@ app.post('/users', async (c) => {
   await sql.begin(async (tx) => {
     const profile = await tx`select 1 from fund_user_profiles where user_id = ${userId}`;
     if (profile.length) {
-      await tx`update fund_user_profiles set role = ${role}, full_name = ${fullName}, phone = ${phone},
+      await tx`update fund_user_profiles set role = ${role}, full_name = ${fullName}, email = ${authEmail}, phone = ${phone},
         phone_login_enabled = ${phoneLoginEnabled},
         linked_member_id = ${linkedMemberId}, active = true, approval_status = 'approved',
         permissions = ${sql.json(permissions ?? {})},
@@ -3479,11 +3617,11 @@ app.post('/users', async (c) => {
     } else {
       await tx`insert into fund_user_profiles
         (user_id, full_name, email, phone, phone_login_enabled, role, linked_member_id, active, approval_status, permissions, approved_at, approved_by)
-        values (${userId}, ${fullName}, ${email}, ${phone}, ${phoneLoginEnabled}, ${role}, ${linkedMemberId}, true,
+        values (${userId}, ${fullName}, ${authEmail}, ${phone}, ${phoneLoginEnabled}, ${role}, ${linkedMemberId}, true,
           'approved', ${sql.json(permissions ?? {})}, now(), ${user.id})`;
     }
     await audit(tx, user, 'إنشاء حساب مستخدم', 'user', userId,
-      `إنشاء حساب ${fullName} (${email}) بدور ${ROLE_LABELS[role]}${phoneLoginEnabled ? ' — الدخول بالهاتف مفعّل' : ''}`);
+      `إنشاء حساب ${fullName} (${publicEmail(authEmail) || phone}) بدور ${ROLE_LABELS[role]}${phoneLoginEnabled ? ' — الدخول بالهاتف مفعّل' : ''}`);
   });
 
   return c.json({ ok: true, user_id: userId }, 201);
@@ -3493,7 +3631,10 @@ app.patch('/users/:id', async (c) => {
   const user = await requireUser(c);
   requireRole(user, 'admin');
   const id = c.req.param('id');
-  const rows = await sql`select * from fund_user_profiles where user_id = ${id}`;
+  const rows = await sql`select p.*, u.email as auth_email
+    from fund_user_profiles p
+    join auth.users u on u.id = p.user_id
+    where p.user_id = ${id}`;
   if (!rows.length) throw new HttpError(404, 'المستخدم غير موجود');
   const profile = rows[0];
   const body = await c.req.json();
@@ -3505,9 +3646,17 @@ app.patch('/users/:id', async (c) => {
   const role = body?.role === undefined ? profile.role : oneOf(body.role, ROLES, { name: 'الدور' });
   const active = body?.active === undefined ? Boolean(profile.active) : bool(body.active, true);
   const phone = body?.phone === undefined ? profile.phone : str(body.phone, { name: 'رقم الهاتف', max: 30 });
-  const phoneLoginEnabled = body?.phone_login_enabled === undefined
-    ? Boolean(profile.phone_login_enabled)
-    : bool(body.phone_login_enabled, false);
+  const profileHasRealEmail = hasRealEmail(profile.auth_email ?? profile.email);
+  // Accounts without a real email must keep a phone number and phone login.
+  // Otherwise the user would have no way to sign in.
+  if (!profileHasRealEmail && !phone) {
+    throw new HttpError(400, 'لا يمكن إزالة رقم الهاتف عن حساب لا يملك بريداً إلكترونياً');
+  }
+  const phoneLoginEnabled = profileHasRealEmail
+    ? (body?.phone_login_enabled === undefined
+        ? Boolean(profile.phone_login_enabled)
+        : bool(body.phone_login_enabled, false))
+    : true;
   if (phoneLoginEnabled) await ensurePhoneLoginAvailable(phone, profile.user_id);
   const linkedMemberId = body?.linked_member_id === undefined
     ? profile.linked_member_id
@@ -3552,11 +3701,19 @@ app.post('/users/:id/approve', async (c) => {
   requireRole(user, 'admin');
   const id = c.req.param('id');
   const body = await c.req.json();
-  const rows = await sql`select * from fund_user_profiles where user_id = ${id}`;
+  const rows = await sql`select p.*, u.email as auth_email
+    from fund_user_profiles p
+    join auth.users u on u.id = p.user_id
+    where p.user_id = ${id}`;
   if (!rows.length) throw new HttpError(404, 'المستخدم غير موجود');
   const role = oneOf(body?.role ?? 'member', ROLES, { name: 'الدور' });
-  const phoneLoginEnabled = bool(body?.phone_login_enabled, false);
-  if (phoneLoginEnabled) await ensurePhoneLoginAvailable(rows[0].phone);
+  const pendingProfile = rows[0];
+  const pendingHasRealEmail = hasRealEmail(pendingProfile.auth_email ?? pendingProfile.email);
+  const defaultPhoneLogin = !pendingHasRealEmail && Boolean(pendingProfile.phone);
+  const phoneLoginEnabled = body?.phone_login_enabled === undefined
+    ? defaultPhoneLogin
+    : (pendingHasRealEmail ? bool(body.phone_login_enabled, false) : true);
+  if (phoneLoginEnabled) await ensurePhoneLoginAvailable(pendingProfile.phone);
   const linkedMemberId = str(body?.linked_member_id, { name: 'العضو المرتبط', max: 60 });
   if (linkedMemberId && !(await sql`select 1 from fund_members where id = ${linkedMemberId}`).length) {
     throw new HttpError(400, 'العضو المرتبط غير موجود');
@@ -3582,7 +3739,7 @@ app.post('/users/:id/approve', async (c) => {
       entityId: id,
     });
     await audit(tx, user, 'الموافقة على تسجيل مستخدم', 'user', id,
-      `تمت الموافقة على ${rows[0].full_name} (${rows[0].email}) بدور ${ROLE_LABELS[role]}`);
+      `تمت الموافقة على ${pendingProfile.full_name} (${publicEmail(pendingProfile.email) || pendingProfile.phone}) بدور ${ROLE_LABELS[role]}`);
   });
   return c.json({ ok: true });
 });
@@ -3607,7 +3764,7 @@ app.post('/users/:id/reject', async (c) => {
       entityId: id,
     });
     await audit(tx, user, 'رفض تسجيل مستخدم', 'user', id,
-      `رفض تسجيل ${rows[0].full_name} (${rows[0].email})${reason ? ` — ${reason}` : ''}`);
+      `رفض تسجيل ${rows[0].full_name} (${publicEmail(rows[0].email) || rows[0].phone || ''})${reason ? ` — ${reason}` : ''}`);
   });
   return c.json({ ok: true });
 });

@@ -89,6 +89,9 @@ PostgreSQL (Supabase)  ──  RLS + triggers + realtime
 - **دخول بالهاتف:** يمكن للمدير تفعيل `phone_login_enabled` لأي مستخدم. يقبل
   النظام الأرقام اليمنية بصيغ `777123456` و`0777123456` و`+967 777 123 456`
   و`00967 777 123 456`، ويرفض الرقم غير المرتبط أو المكرر أو المعطّل.
+- **إنشاء حساب ببريد أو هاتف:** عند إضافة مستخدم يكفي إدخال البريد أو رقم
+  الهاتف. الحساب الذي بلا بريد يحصل على بريد داخلي غير ظاهر ويُفعّل له الدخول
+  بالهاتف تلقائياً، ويمكنه تغيير كلمة مروره من الملف الشخصي.
 - **حذف جماعي:** تحديد عدة أعضاء أو استحقاقات وحذفها دفعة واحدة، مع منع حذف
   ما له سندات أو حركات مالية.
 - **استيراد سندات Excel:** استيراد `.xlsx` أو `.csv` مع معاينة الأخطاء قبل
@@ -251,6 +254,34 @@ curl "https://vhyckuwhuhdyvhxyqdgt.supabase.co/functions/v1/api/health" `
 - الخطوط والأيقونات بمسارات نسبية.
 - Service Worker يحدّث نفسه تلقائياً. بعد نشر جديد، حدّث الصفحة مرة واحدة إن ظهرت
   نسخة قديمة.
+
+### إذا كان `github.io` محجوباً — Cloudflare Pages
+
+بعض مزوّدي الإنترنت يحجبون `github.io` بينما يبقى `supabase.co` وGoogle متاحين.
+في هذه الحالة انشر نسخة الويب على Cloudflare Pages:
+
+1. أنشئ حساباً مجانياً على <https://dash.cloudflare.com>.
+2. أنشئ API Token بصلاحية **Cloudflare Pages: Edit** من
+   **My Profile → API Tokens**، واحفظه في مكان آمن.
+3. أضف السرّين التاليين في GitHub:
+   **Settings → Secrets and variables → Actions**:
+   - `CLOUDFLARE_API_TOKEN`
+   - `CLOUDFLARE_ACCOUNT_ID` (يظهر في لوحة Cloudflare).
+4. شغّل workflow **Deploy to Cloudflare Pages** من تبويب Actions، أو ادفع إلى
+   `main`. الملف: `.github/workflows/deploy-cloudflare.yml`.
+5. سيُنشر الموقع على `https://banan-fund.pages.dev`. أضف هذا الرابط إلى
+   `APP_ORIGINS` في أسرار Edge Function ثم أعد نشر الدالة.
+6. حدّث `VITE_PUBLIC_APP_URL` في أسرار GitHub إلى رابط Cloudflare، ثم أعد بناء
+   APK جديداً حتى تشير رموز QR إلى الرابط الذي يعمل بدون VPN.
+
+> لا تضع `service_role` أو كلمة مرور قاعدة البيانات في Cloudflare أو Vite.
+> الـ workflow يبني الموقع فقط، ولا يحتاج أي صلاحية على قاعدة البيانات.
+
+### حل بديل: Netlify أو Vercel
+
+نفس الفكرة: Build command `npm run build`، Output `dist`، ونفس متغيرات Vite.
+أضف رابط الموقع إلى `APP_ORIGINS`. استخدم أياً من هذه المنصات إذا كان
+`pages.dev` نفسه محجوباً في شبكتك.
 
 ---
 

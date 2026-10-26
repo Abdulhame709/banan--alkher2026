@@ -34,6 +34,7 @@ import type { Member, Role, User } from '../types';
 
 interface AdminUser extends User {
   account_created_at: string;
+  has_email: boolean;
   linked_member_name: string | null;
   linked_member_no: string | null;
 }
@@ -278,13 +279,24 @@ export function UsersPage() {
   async function submit(event: FormEvent) {
     event.preventDefault();
     setFormError('');
+    const email = form.email.trim();
+    const phone = form.phone.trim();
+    if (editing) {
+      if (!phone && !editing.has_email) {
+        setFormError('هذا الحساب لا يملك بريداً إلكترونياً؛ يجب الإبقاء على رقم هاتف للدخول');
+        return;
+      }
+    } else if (!email && !phone) {
+      setFormError('أدخل بريداً إلكترونياً أو رقم هاتف للدخول');
+      return;
+    }
     setSaving(true);
     try {
       if (editing) {
         await api.patch(`/users/${editing.id}`, {
           full_name: form.full_name.trim(),
-          phone: form.phone.trim() || null,
-          phone_login_enabled: form.phone_login_enabled,
+          phone: phone || null,
+          phone_login_enabled: editing.has_email ? form.phone_login_enabled : Boolean(phone),
           role: form.role,
           active: form.active,
           linked_member_id: form.linked_member_id || null,
@@ -295,10 +307,10 @@ export function UsersPage() {
       } else {
         await api.post('/users', {
           full_name: form.full_name.trim(),
-          email: form.email.trim(),
+          email: email || null,
           password: form.password,
-          phone: form.phone.trim() || null,
-          phone_login_enabled: form.phone_login_enabled,
+          phone: phone || null,
+          phone_login_enabled: email ? form.phone_login_enabled : Boolean(phone),
           role: form.role,
           linked_member_id: form.linked_member_id || null,
           permissions,
@@ -373,7 +385,8 @@ export function UsersPage() {
                 <span className="avatar">{row.full_name.charAt(0)}</span>
                 <div className="pending-info">
                   <strong>{row.full_name}</strong>
-                  <small dir="ltr">{row.email}</small>
+                  <small dir="ltr">{row.email || row.phone || '—'}</small>
+                  {!row.has_email && row.phone && <small className="phone-login-tag">دخول بالهاتف</small>}
                   <small>{formatDate(row.account_created_at)}</small>
                 </div>
                 <div className="row-actions">
@@ -384,7 +397,7 @@ export function UsersPage() {
                       setApprovalTarget(row);
                       setApprovalRole('member');
                       setApprovalMemberId(row.linked_member_id ?? '');
-                      setApprovalPhoneLogin(Boolean(row.phone_login_enabled));
+                      setApprovalPhoneLogin(Boolean(row.phone_login_enabled) || (!row.has_email && Boolean(row.phone)));
                       setApprovalError('');
                     }}
                   >
@@ -411,7 +424,7 @@ export function UsersPage() {
 
       <Card padding={false} className="table-card">
         <div className="table-toolbar">
-          <SearchInput value={search} onChange={setSearch} placeholder="ابحث بالاسم أو البريد أو الدور…" />
+          <SearchInput value={search} onChange={setSearch} placeholder="ابحث بالاسم أو البريد أو الهاتف أو الدور…" />
         </div>
         {loading ? (
           <LoadingState label="جارٍ تحميل المستخدمين…" />
@@ -446,7 +459,7 @@ export function UsersPage() {
                         </div>
                       </div>
                     </td>
-                    <td dir="ltr" className="mono">{row.email}</td>
+                    <td dir="ltr" className="mono">{row.email || <span className="muted">دخول بالهاتف</span>}</td>
                     <td>
                       <Badge tone={row.role === 'admin' ? 'gold' : row.role === 'member' ? 'neutral' : 'info'}>
                         {ROLE_LABELS[row.role]}
@@ -481,7 +494,7 @@ export function UsersPage() {
       {formOpen && (
         <Modal
           title={editing ? 'تعديل مستخدم' : 'إضافة مستخدم جديد'}
-          subtitle={editing ? editing.email : 'إنشاء حساب مباشرة بصلاحية محددة'}
+          subtitle={editing ? (editing.email || editing.phone || 'حساب بالهاتف') : 'إنشاء حساب مباشرة بصلاحية محددة'}
           icon={<UserCog size={20} />}
           size="lg"
           onClose={() => setFormOpen(false)}
@@ -498,18 +511,22 @@ export function UsersPage() {
               <Field label="الاسم الكامل" required>
                 <TextInput value={form.full_name} onChange={(e) => setForm((current) => ({ ...current, full_name: e.target.value }))} required />
               </Field>
-              <Field label="رقم الهاتف">
+              <Field label="البريد الإلكتروني" hint="اختياري إذا أدخلت رقم هاتف">
+                <TextInput
+                  type="email"
+                  value={form.email}
+                  onChange={(e) => setForm((current) => ({ ...current, email: e.target.value }))}
+                  dir="ltr"
+                  disabled={Boolean(editing)}
+                />
+              </Field>
+              <Field label="رقم الهاتف" hint={form.email.trim() ? 'اختياري للدخول بالهاتف' : 'مطلوب إذا لم يوجد بريد إلكتروني'}>
                 <TextInput value={form.phone} onChange={(e) => setForm((current) => ({ ...current, phone: e.target.value }))} dir="ltr" />
               </Field>
               {!editing && (
-                <>
-                  <Field label="البريد الإلكتروني" required>
-                    <TextInput type="email" value={form.email} onChange={(e) => setForm((current) => ({ ...current, email: e.target.value }))} dir="ltr" required />
-                  </Field>
-                  <Field label="كلمة المرور" required hint="8 أحرف على الأقل">
-                    <TextInput type="password" value={form.password} onChange={(e) => setForm((current) => ({ ...current, password: e.target.value }))} dir="ltr" required />
-                  </Field>
-                </>
+                <Field label="كلمة المرور" required hint="8 أحرف على الأقل">
+                  <TextInput type="password" value={form.password} onChange={(e) => setForm((current) => ({ ...current, password: e.target.value }))} dir="ltr" required />
+                </Field>
               )}
               <Field label="الدور والصلاحية" required>
                 <Select value={form.role} onChange={(e) => changeRole(e.target.value as Role)}>
@@ -526,22 +543,31 @@ export function UsersPage() {
               </Field>
             </div>
 
-            <label className="switch-field">
-              <input
-                type="checkbox"
-                checked={form.phone_login_enabled}
-                onChange={(e) => setForm((current) => ({ ...current, phone_login_enabled: e.target.checked }))}
-              />
-              <span className="switch" />
-              <span>السماح بالدخول برقم الهاتف بدلاً من البريد الإلكتروني</span>
-            </label>
-            {form.phone_login_enabled && (
-              <Alert tone={form.phone.trim() ? 'info' : 'warning'}>
-                {form.phone.trim()
-                  ? 'سيتمكن المستخدم من تسجيل الدخول بهذا الرقم وكلمة المرور. يجب أن يكون الرقم فريداً بين الحسابات المفعّلة.'
-                  : 'أدخل رقم هاتف صالحاً أولاً، ثم فعّل هذا الخيار.'}
-              </Alert>
-            )}
+            {(() => {
+              const phoneOnly = editing ? !editing.has_email : (!form.email.trim() && Boolean(form.phone.trim()));
+              const phoneLoginChecked = phoneOnly || form.phone_login_enabled;
+              return (
+                <>
+                  <label className="switch-field">
+                    <input
+                      type="checkbox"
+                      checked={phoneLoginChecked}
+                      disabled={phoneOnly}
+                      onChange={(e) => setForm((current) => ({ ...current, phone_login_enabled: e.target.checked }))}
+                    />
+                    <span className="switch" />
+                    <span>{phoneOnly ? 'الدخول برقم الهاتف مفعّل تلقائياً (لا يوجد بريد إلكتروني)' : 'السماح بالدخول برقم الهاتف بدلاً من البريد الإلكتروني'}</span>
+                  </label>
+                  {phoneLoginChecked && (
+                    <Alert tone={form.phone.trim() ? 'info' : 'warning'}>
+                      {form.phone.trim()
+                        ? 'سيتمكن المستخدم من تسجيل الدخول بهذا الرقم وكلمة المرور. يجب أن يكون الرقم فريداً بين الحسابات المفعّلة.'
+                        : 'أدخل رقم هاتف صالحاً أولاً، ثم فعّل هذا الخيار.'}
+                    </Alert>
+                  )}
+                </>
+              );
+            })()}
 
             <div className="permission-matrix">
               <div className="permission-matrix-head">
@@ -603,7 +629,7 @@ export function UsersPage() {
       {approvalTarget && (
         <Modal
           title="الموافقة على طلب تسجيل"
-          subtitle={`${approvalTarget.full_name} — ${approvalTarget.email}`}
+          subtitle={`${approvalTarget.full_name} — ${approvalTarget.email || approvalTarget.phone || 'حساب بالهاتف'}`}
           icon={<ShieldCheck size={20} />}
           size="md"
           onClose={() => setApprovalTarget(null)}

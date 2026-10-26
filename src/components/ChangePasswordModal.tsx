@@ -1,10 +1,10 @@
 import { useState, type FormEvent } from 'react';
 import { KeyRound } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { api, apiErrorMessage } from '../lib/api';
 import { useToast } from '../lib/toast';
 import { Alert, Button, Field, Modal, TextInput } from './ui';
 
-export function ChangePasswordModal({ email, onClose }: { email: string; onClose: () => void }) {
+export function ChangePasswordModal({ onClose }: { onClose: () => void }) {
   const toast = useToast();
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
@@ -25,17 +25,14 @@ export function ChangePasswordModal({ email, onClose }: { email: string; onClose
     }
     setSaving(true);
     try {
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email,
-        password: current,
+      await api.post('/auth/change-password', {
+        current_password: current,
+        new_password: next,
       });
-      if (signInError) throw new Error('كلمة المرور الحالية غير صحيحة.');
-      const { error: updateError } = await supabase.auth.updateUser({ password: next });
-      if (updateError) throw new Error(updateError.message);
       toast.success('تم تغيير كلمة المرور بنجاح');
       onClose();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'تعذر تغيير كلمة المرور.');
+      setError(apiErrorMessage(submitError));
     } finally {
       setSaving(false);
     }

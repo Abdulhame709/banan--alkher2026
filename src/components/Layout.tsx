@@ -309,7 +309,7 @@ export function Layout() {
                     <span className="avatar avatar-lg">{initials(user.full_name)}</span>
                     <div>
                       <strong>{user.full_name}</strong>
-                      <span>{user.email}</span>
+                      <span>{user.email || user.phone || '—'}</span>
                       <em>{ROLE_LABELS[user.role]}</em>
                     </div>
                   </div>
@@ -365,7 +365,7 @@ export function Layout() {
       </nav>
 
       {passwordOpen && (
-        <ChangePasswordModal email={user.email} onClose={() => setPasswordOpen(false)} />
+        <ChangePasswordModal onClose={() => setPasswordOpen(false)} />
       )}
     </div>
   );

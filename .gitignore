@@ -37,5 +37,8 @@ android/build/
 supabase/.temp/
 supabase/.branches/
 
+# Cloudflare Wrangler temporary files
+.wrangler/
+
 # test output
 coverage/

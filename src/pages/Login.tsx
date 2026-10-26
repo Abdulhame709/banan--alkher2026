@@ -75,6 +75,10 @@ export function LoginPage() {
       setError('كلمة المرور يجب أن تكون 8 أحرف على الأقل');
       return;
     }
+    if (mode === 'signup' && !form.email.trim() && !form.phone.trim()) {
+      setError('أدخل بريداً إلكترونياً أو رقم هاتف للدخول');
+      return;
+    }
     setSubmitting(true);
     try {
       if (mode === 'login') {
@@ -214,7 +218,7 @@ export function LoginPage() {
                   </div>
                 </Field>
                 <div className="form-grid two">
-                  <Field label="البريد الإلكتروني" required>
+                  <Field label="البريد الإلكتروني" hint="اختياري إذا أدخلت رقم هاتف">
                     <div className="input-with-icon">
                       <Mail size={17} />
                       <input
@@ -223,13 +227,12 @@ export function LoginPage() {
                         value={form.email}
                         onChange={(event) => update('email', event.target.value)}
                         placeholder="name@example.com"
-                        required
                         dir="ltr"
                         autoComplete="email"
                       />
                     </div>
                   </Field>
-                  <Field label="رقم الهاتف">
+                  <Field label="رقم الهاتف" hint="اختياري إذا أدخلت بريداً إلكترونياً">
                     <div className="input-with-icon">
                       <Phone size={17} />
                       <input
@@ -243,6 +246,7 @@ export function LoginPage() {
                     </div>
                   </Field>
                 </div>
+                <p className="auth-hint">أدخل بريداً إلكترونياً أو رقم هاتف على الأقل. إذا أدخلت الهاتف فقط فسيكون الدخول بالهاتف بعد موافقة الإدارة.</p>
               </>
             )}
 

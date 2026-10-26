@@ -20,7 +20,7 @@ interface AuthContextValue {
   login: (identifier: string, password: string) => Promise<void>;
   signup: (data: {
     full_name: string;
-    email: string;
+    email?: string;
     password: string;
     phone?: string;
   }) => Promise<{ message: string }>;
@@ -163,25 +163,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const signup = useCallback(
-    async (data: { full_name: string; email: string; password: string; phone?: string }) => {
-      const { data: result, error } = await supabase.auth.signUp({
-        email: data.email,
+    async (data: { full_name: string; email?: string; password: string; phone?: string }) => {
+      const result = await api.post<{ message: string }>('/auth/signup', {
+        full_name: data.full_name,
+        email: data.email?.trim() || null,
+        phone: data.phone?.trim() || null,
         password: data.password,
-        options: {
-          data: {
-            full_name: data.full_name,
-            phone: data.phone || null,
-          },
-        },
       });
-      if (error) throw new ApiError(friendlyAuthError(error.message), 400);
       // Signup creates a pending account. Never leave the new user signed in
       // before an administrator approves the request.
-      if (result.session) await supabase.auth.signOut().catch(() => undefined);
+      await supabase.auth.signOut().catch(() => undefined);
       setAccessToken(null);
       clear();
       return {
-        message: 'تم إرسال طلب التسجيل بنجاح. سيبقى الحساب معطلاً حتى توافق الإدارة عليه.',
+        message: result.message || 'تم إرسال طلب التسجيل بنجاح. سيبقى الحساب معطلاً حتى توافق الإدارة عليه.',
       };
     },
     [clear]
