@@ -1,0 +1,8 @@
+name = "banan-fund"
+compatibility_date = "2026-10-26"
+
+# Static SPA built by Vite. Hash routing means no server rewrite is required,
+# but single-page-application keeps direct asset paths working.
+[assets]
+directory = "./dist"
+not_found_handling = "single-page-application"
