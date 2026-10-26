@@ -1194,14 +1194,20 @@ app.use('*', async (c, next) => {
   await next();
 });
 
+// Health checks are hit by GitHub Actions, external monitors and the diagnostics
+// page. A short per-isolate cache prevents a burst of checks from queueing on
+// the small transaction-pooler pool while still detecting a database outage
+// within a few seconds.
+let healthDbCache = { at: 0, ok: false };
 app.get('/health', async (c) => {
   let db = false;
   if (c.req.query('db') === '1') {
-    const forwarded = c.req.header('x-forwarded-for') ?? '';
-    const ip = forwarded.split(',')[0].trim() || c.req.header('cf-connecting-ip') || 'unknown';
-    await rateLimit(`health:${ip}`, 120, 60);
-    await sql`select 1`;
-    db = true;
+    const now = Date.now();
+    if (now - healthDbCache.at > 5000) {
+      await sql`select 1`;
+      healthDbCache = { at: now, ok: true };
+    }
+    db = healthDbCache.ok;
   }
   return c.json({ ok: true, service: 'صندوق بنان الخير للبنيان', db, time: new Date().toISOString() });
 });
