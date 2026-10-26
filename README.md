@@ -290,12 +290,16 @@ npm run build
 npx cap sync android
 cd android
 ./gradlew assembleRelease `
-  -PbananVersionCode=3 `
+  -PbananVersionCode=13 `
   -PbananVersionName=1.0.13
 ```
 
 أو اترك GitHub Actions يبني وينشر تلقائياً عند الدفع إلى `main`. يظهر الإصدار في
 **Releases** باسم `apk-1.0.<رقم التشغيل>`.
+
+> الإصدار `1.0.13` موقّع بنفس keystore السابق، لذلك يُثبّت فوق النسخة القديمة
+> دون حذف البيانات. ثبّت `banan-fund-1.0.13.apk` قبل اختبار الوصول بدون VPN؛
+> النسخ القديمة قد تشير إلى مشروع Supabase القديم.
 
 > الطباعة تعمل بشكل أفضل في نسخة الويب. تصدير CSV في APK يستخدم قائمة المشاركة
 > (Filesystem + Share).
