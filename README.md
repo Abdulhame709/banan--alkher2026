@@ -10,7 +10,9 @@ Excel، المرفقات المتعددة، التوقيع الإلكتروني 
 
 | الخدمة | الرابط |
 |---|---|
-| نسخة الويب (PWA) | https://walid19-89.github.io/banan--alkher2026/ |
+| نسخة الويب (تعمل بدون VPN) | https://banan-fund.pool-wave.workers.dev/ |
+| نسخة الويب (GitHub Pages — قد تُحجب) | https://walid19-89.github.io/banan--alkher2026/ |
+| فحص الوصول المباشر | https://banan-fund.pool-wave.workers.dev/ping.txt |
 | تطبيق الأندرويد (APK) | https://github.com/walid19-89/banan--alkher2026/releases |
 | الكود | https://github.com/walid19-89/banan--alkher2026 |
 | Supabase | https://supabase.com/dashboard/project/vhyckuwhuhdyvhxyqdgt |
@@ -255,24 +257,29 @@ curl "https://vhyckuwhuhdyvhxyqdgt.supabase.co/functions/v1/api/health" `
 - Service Worker يحدّث نفسه تلقائياً. بعد نشر جديد، حدّث الصفحة مرة واحدة إن ظهرت
   نسخة قديمة.
 
-### إذا كان `github.io` محجوباً — Cloudflare Pages
+### إذا كان `github.io` محجوباً — Cloudflare Worker (مفعّل)
 
 بعض مزوّدي الإنترنت يحجبون `github.io` بينما يبقى `supabase.co` وGoogle متاحين.
-في هذه الحالة انشر نسخة الويب على Cloudflare Pages:
+النسخة العامة التي تعمل بدون VPN حالياً:
 
-1. أنشئ حساباً مجانياً على <https://dash.cloudflare.com>.
-2. أنشئ API Token بصلاحية **Cloudflare Pages: Edit** من
-   **My Profile → API Tokens**، واحفظه في مكان آمن.
-3. أضف السرّين التاليين في GitHub:
-   **Settings → Secrets and variables → Actions**:
-   - `CLOUDFLARE_API_TOKEN`
-   - `CLOUDFLARE_ACCOUNT_ID` (يظهر في لوحة Cloudflare).
-4. شغّل workflow **Deploy to Cloudflare Pages** من تبويب Actions، أو ادفع إلى
-   `main`. الملف: `.github/workflows/deploy-cloudflare.yml`.
-5. سيُنشر الموقع على `https://banan-fund.pages.dev`. أضف هذا الرابط إلى
-   `APP_ORIGINS` في أسرار Edge Function ثم أعد نشر الدالة.
-6. حدّث `VITE_PUBLIC_APP_URL` في أسرار GitHub إلى رابط Cloudflare، ثم أعد بناء
-   APK جديداً حتى تشير رموز QR إلى الرابط الذي يعمل بدون VPN.
+**<https://banan-fund.pool-wave.workers.dev/>**
+
+- تُنشر تلقائياً عبر `.github/workflows/deploy-worker.yml` عند تغيير ملفات
+  الواجهة، أو يدوياً من تبويب Actions.
+- تحتاج السرّين `CLOUDFLARE_API_TOKEN` و`CLOUDFLARE_ACCOUNT_ID` في GitHub.
+- صلاحيات التوكن: **Workers Scripts: Edit** و**Account Settings: Read**.
+- ملف الإعداد: `wrangler.toml` — الاسم `banan-fund`، والمجلد `dist`.
+- للتحقق من وصول الشبكة: افتح
+  <https://banan-fund.pool-wave.workers.dev/ping.txt> — يجب أن يظهر
+  `banan-fund-ok`. إذا ظهر، فالشبكة تصل إلى الاستضافة.
+
+#### Cloudflare Pages (اختياري — رابط أجمل)
+
+`https://banan-fund.pages.dev` ممكن أيضاً، لكنه يحتاج صلاحية إضافية في التوكن:
+**Cloudflare Pages: Edit** و**Account Settings: Read**. بعد تعديل التوكن شغّل
+workflow **Deploy to Cloudflare Pages** يدوياً (الملف
+`.github/workflows/deploy-cloudflare.yml`). أضف الرابط إلى `APP_ORIGINS` ثم
+أعد نشر Edge Function. حتى ذلك الحين، رابط Worker هو المعتمد.
 
 > لا تضع `service_role` أو كلمة مرور قاعدة البيانات في Cloudflare أو Vite.
 > الـ workflow يبني الموقع فقط، ولا يحتاج أي صلاحية على قاعدة البيانات.
@@ -324,19 +331,19 @@ npm run build
 npx cap sync android
 cd android
 ./gradlew assembleRelease `
-  -PbananVersionCode=17 `
-  -PbananVersionName=1.0.17
+  -PbananVersionCode=19 `
+  -PbananVersionName=1.0.19
 ```
 
 أو اترك GitHub Actions يبني وينشر تلقائياً عند الدفع إلى `main`. يظهر الإصدار في
 **Releases** باسم `apk-1.0.<رقم التشغيل>`.
 
-> الإصدار `1.0.17` موقّع بنفس keystore السابق، لذلك يُثبّت فوق النسخة القديمة
-> دون حذف البيانات. ثبّت `banan-fund-1.0.17.apk` قبل اختبار الوصول بدون VPN؛
+> الإصدار `1.0.19` موقّع بنفس keystore السابق، لذلك يُثبّت فوق النسخة القديمة
+> دون حذف البيانات. ثبّت `banan-fund-1.0.19.apk` قبل اختبار الوصول بدون VPN؛
 > النسخ القديمة قد تشير إلى مشروع Supabase القديم.
 >
-> - الرابط: <https://github.com/walid19-89/banan--alkher2026/releases/download/apk-1.0.17/banan-fund-1.0.17.apk>
-> - SHA-256: `58782240FDD46F7BB3148DF35E719CD0788A96C3CD403DEA854E5023BA0B7A4E`
+> - الرابط: <https://github.com/walid19-89/banan--alkher2026/releases/download/apk-1.0.19/banan-fund-1.0.19.apk>
+> - SHA-256: `248C5C4545F320451E0E7436A10FB7345C41B814CCEAFAFFF4FAA0CAA60EBA0A`
 
 > الطباعة تعمل بشكل أفضل في نسخة الويب. تصدير CSV في APK يستخدم قائمة المشاركة
 > (Filesystem + Share).
