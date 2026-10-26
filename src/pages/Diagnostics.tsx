@@ -43,8 +43,13 @@ export function DiagnosticsPage() {
     setCopied(false);
     const timeout = AbortSignal.timeout(15000);
     const results: Check[] = [];
-    results.push(await runCheck('استضافة الصفحة', () =>
-      fetch(window.location.href, { method: 'HEAD', cache: 'no-store', signal: timeout })));
+    const isWeb = window.location.protocol === 'http:' || window.location.protocol === 'https:';
+    if (isWeb) {
+      results.push(await runCheck('استضافة الصفحة', () =>
+        fetch(window.location.href, { method: 'HEAD', cache: 'no-store', signal: timeout })));
+    } else {
+      results.push({ name: 'استضافة الصفحة', ok: true, detail: 'داخل التطبيق — لا ينطبق' });
+    }
     results.push(await runCheck('الإنترنت العام (Google)', () =>
       fetch('https://www.google.com/generate_204', { mode: 'no-cors', cache: 'no-store', signal: timeout })));
     results.push(await runCheck('Supabase / API', () =>
