@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, Printer, QrCode, ShieldCheck, X } from 'lucide-react';
 import { useAuth } from '../lib/auth';
+import { hijriMonthKey, hijriMonthLabel } from '../lib/hijri';
 import { downloadElementAsPdf } from '../lib/pdf';
 import { verifyDocumentUrl } from '../lib/public';
 import {
@@ -219,6 +220,8 @@ export function ReceiptVoucher({
 }) {
   const { settings } = useAuth();
   const isDonation = receipt.receipt_type === 'donation';
+  const isSubscription = receipt.receipt_type === 'subscription';
+  const isMultiMonth = isSubscription && !receipt.subscription_id;
   const party = receipt.member_name || receipt.donor_name || '—';
   return (
     <PrintPreview title={`سند قبض ${refReceipt(receipt.receipt_no)}`} onClose={onClose}>
@@ -227,7 +230,7 @@ export function ReceiptVoucher({
         <div className="voucher-title-row">
           <div className="voucher-stamp">
             <span>سند قبض</span>
-            <small>{receipt.receipt_type === 'subscription' ? 'تحصيل اشتراك' : isDonation ? 'إيراد تبرع' : 'إيراد'}</small>
+            <small>{isMultiMonth ? 'تحصيل اشتراكات' : isSubscription ? 'تحصيل اشتراك' : isDonation ? 'إيراد تبرع' : 'إيراد'}</small>
           </div>
           <div className="voucher-meta">
             <div><span>رقم السند</span><strong>{refReceipt(receipt.receipt_no)}</strong></div>
@@ -244,8 +247,16 @@ export function ReceiptVoucher({
         <dl className="voucher-grid">
           <div><dt>استلمنا من</dt><dd>{party}</dd></div>
           <div><dt>{receipt.member_no ? 'رقم العضوية' : 'نوع الإيراد'}</dt><dd>{receipt.member_no || (isDonation ? 'تبرع' : 'إيراد آخر')}</dd></div>
-          <div><dt>نوع السند</dt><dd>{isDonation ? (receipt.is_restricted ? 'تبرع مخصص' : 'تبرع عام') : receipt.receipt_type === 'subscription' ? 'اشتراك شهري' : 'إيراد آخر'}</dd></div>
-          <div><dt>الغرض / البيان</dt><dd>{receipt.restricted_purpose || (receipt.receipt_type === 'subscription' ? 'سداد استحقاق شهري' : isDonation ? 'تبرع عام لدعم أنشطة الصندوق' : 'إيراد متنوع')}</dd></div>
+          <div><dt>نوع السند</dt><dd>{isDonation ? (receipt.is_restricted ? 'تبرع مخصص' : 'تبرع عام') : isMultiMonth ? 'اشتراكات متعددة الأشهر' : isSubscription ? 'اشتراك شهري' : 'إيراد آخر'}</dd></div>
+          <div><dt>الغرض / البيان</dt><dd>{receipt.restricted_purpose || (isMultiMonth ? 'سداد مستحقات اشتراكات متعددة (توزيع على أقدم الأشهر)' : isSubscription ? 'سداد استحقاق شهري' : isDonation ? 'تبرع عام لدعم أنشطة الصندوق' : 'إيراد متنوع')}</dd></div>
+          {isMultiMonth && receipt.allocations?.length ? (
+            <div className="span-2">
+              <dt>الأشهر المسددة</dt>
+              <dd>{receipt.allocations.map((allocation) => allocation.hijri_year && allocation.hijri_month
+                ? hijriMonthLabel(hijriMonthKey(allocation.hijri_year, allocation.hijri_month))
+                : monthLabel(String(allocation.due_month).slice(0, 7))).join('، ')}</dd>
+            </div>
+          ) : null}
           {receipt.notes && <div className="span-2"><dt>ملاحظات</dt><dd>{receipt.notes}</dd></div>}
         </dl>
 

@@ -925,6 +925,14 @@ async function getReceipt(id: string) {
   if (!rows.length) return null;
   const receipt = rows[0];
   receipt.attachments = (await attachmentsFor(sql, 'receipt', [id])).get(id) ?? [];
+  receipt.allocations = await sql`
+    select a.id, a.receipt_id, a.subscription_id, a.amount,
+           s.due_month, s.hijri_year, s.hijri_month,
+           s.amount as subscription_amount
+      from fund_receipt_allocations a
+      join fund_subscriptions s on s.id = a.subscription_id
+     where a.receipt_id = ${id}
+     order by s.due_month asc`;
   return receipt;
 }
 
@@ -2304,36 +2312,105 @@ app.post('/receipts', async (c) => {
   let donorName = str(body?.donor_name, { name: 'اسم المتبرع', max: 150 });
 
   if (receiptType === 'subscription') {
-    if (!subscriptionId) {
-      throw new HttpError(400, 'سند الاشتراك يجب أن يرتبط باستحقاق شهري. استخدم زر السداد في صفحة الاشتراكات');
+    if (subscriptionId) {
+      const result = await sql.begin(async (tx) => {
+        const rows = await tx`select s.*, m.full_name, m.member_no
+          from fund_subscriptions s join fund_members m on m.id = s.member_id
+          where s.id = ${subscriptionId} for update`;
+        if (!rows.length) throw new HttpError(400, 'الاستحقاق المحدد غير موجود');
+        const subscription = rows[0];
+        if (memberId && memberId !== subscription.member_id) {
+          throw new HttpError(400, 'العضو لا يطابق الاستحقاق المحدد');
+        }
+        if (subscription.paid_amount >= subscription.amount) throw new HttpError(409, 'هذا الاستحقاق مسدد بالكامل');
+        const remaining = round2(Number(subscription.amount) - Number(subscription.paid_amount));
+        if (value !== remaining) {
+          throw new HttpError(400, `السداد الجزئي غير مسموح. المطلوب سداد كامل المتبقي (${remaining} ر.ي)`);
+        }
+        memberId = subscription.member_id;
+        donorName = subscription.full_name;
+        const receiptId = crypto.randomUUID();
+        await tx`update fund_subscriptions set paid_amount = ${Number(subscription.amount)}, status = 'paid' where id = ${subscriptionId}`;
+        const receiptNo = await nextSequence(tx, 'receipt');
+        await tx`insert into fund_receipts
+          (id, receipt_no, receipt_type, member_id, subscription_id, donor_name, amount,
+           payment_method, is_restricted, restricted_purpose, receipt_date, attachment_url, notes, created_by)
+          values (${receiptId}, ${receiptNo}, 'subscription', ${memberId}, ${subscriptionId}, ${donorName},
+           ${value}, ${paymentMethod}, false, null, ${receiptDate}, ${attachment}, ${notes}, ${user.id})`;
+        await insertAttachments(tx, 'receipt', receiptId, attachments, user);
+        await audit(tx, user, 'تسجيل سند قبض اشتراك', 'receipt', receiptId,
+          `سند REC-${String(receiptNo).padStart(4, '0')} — ${subscription.full_name} — ${monthLabel(subscription.due_month)} — ${value} ر.ي`);
+        return receiptId;
+      });
+      return c.json({ receipt: await getReceipt(result) }, 201);
     }
+
+    // Collection without a specific month: distribute the amount over the
+    // member's oldest outstanding dues. This supports one receipt covering
+    // several past months (for example 5,000 for five months).
+    if (!memberId) throw new HttpError(400, 'اختر العضو أولاً لتسجيل تحصيل الاشتراكات');
     const result = await sql.begin(async (tx) => {
-      const rows = await tx`select s.*, m.full_name, m.member_no
-        from fund_subscriptions s join fund_members m on m.id = s.member_id
-        where s.id = ${subscriptionId} for update`;
-      if (!rows.length) throw new HttpError(400, 'الاستحقاق المحدد غير موجود');
-      const subscription = rows[0];
-      if (memberId && memberId !== subscription.member_id) {
-        throw new HttpError(400, 'العضو لا يطابق الاستحقاق المحدد');
+      const memberRows = await tx`
+        select id, full_name, member_no from fund_members where id = ${memberId} for update`;
+      if (!memberRows.length) throw new HttpError(400, 'العضو المحدد غير موجود');
+      const member = memberRows[0];
+
+      const dues = await tx`
+        select id, due_month, hijri_year, hijri_month, amount, paid_amount
+          from fund_subscriptions
+         where member_id = ${memberId}
+           and status <> 'paid'
+           and paid_amount < amount
+         order by due_month asc, created_at asc
+         for update`;
+
+      const totalOutstanding = round2(dues.reduce(
+        (sum: number, row: any) => sum + (Number(row.amount) - Number(row.paid_amount)),
+        0
+      ));
+      if (totalOutstanding <= 0) {
+        throw new HttpError(409, 'لا توجد متأخرات مستحقة على هذا العضو');
       }
-      if (subscription.paid_amount >= subscription.amount) throw new HttpError(409, 'هذا الاستحقاق مسدد بالكامل');
-      const remaining = round2(Number(subscription.amount) - Number(subscription.paid_amount));
-      if (value !== remaining) {
-        throw new HttpError(400, `السداد الجزئي غير مسموح. المطلوب سداد كامل المتبقي (${remaining} ر.ي)`);
+      if (value > totalOutstanding) {
+        throw new HttpError(400,
+          `المبلغ أكبر من إجمالي المتأخرات (${moneyLabel(totalOutstanding)}). أنشئ استحقاقات الأشهر الناقصة أولاً أو أدخل مبلغاً لا يتجاوز الإجمالي.`);
       }
-      memberId = subscription.member_id;
-      donorName = subscription.full_name;
+
+      let left = value;
+      const allocations: Array<{ subscription_id: string; amount: number; label: string }> = [];
+      for (const due of dues as any[]) {
+        if (left <= 0) break;
+        const remaining = round2(Number(due.amount) - Number(due.paid_amount));
+        const take = Math.min(remaining, left);
+        if (take <= 0) continue;
+        const newPaid = round2(Number(due.paid_amount) + take);
+        const status = newPaid >= Number(due.amount) ? 'paid' : 'partial';
+        await tx`update fund_subscriptions
+          set paid_amount = ${newPaid}, status = ${status}
+          where id = ${due.id}`;
+        allocations.push({
+          subscription_id: due.id,
+          amount: take,
+          label: monthLabel(due.due_month),
+        });
+        left = round2(left - take);
+      }
+
       const receiptId = crypto.randomUUID();
-      await tx`update fund_subscriptions set paid_amount = ${Number(subscription.amount)}, status = 'paid' where id = ${subscriptionId}`;
       const receiptNo = await nextSequence(tx, 'receipt');
       await tx`insert into fund_receipts
         (id, receipt_no, receipt_type, member_id, subscription_id, donor_name, amount,
          payment_method, is_restricted, restricted_purpose, receipt_date, attachment_url, notes, created_by)
-        values (${receiptId}, ${receiptNo}, 'subscription', ${memberId}, ${subscriptionId}, ${donorName},
+        values (${receiptId}, ${receiptNo}, 'subscription', ${memberId}, null, ${member.full_name},
          ${value}, ${paymentMethod}, false, null, ${receiptDate}, ${attachment}, ${notes}, ${user.id})`;
+      for (const allocation of allocations) {
+        await tx`insert into fund_receipt_allocations (receipt_id, subscription_id, amount)
+          values (${receiptId}, ${allocation.subscription_id}, ${allocation.amount})`;
+      }
       await insertAttachments(tx, 'receipt', receiptId, attachments, user);
-      await audit(tx, user, 'تسجيل سند قبض اشتراك', 'receipt', receiptId,
-        `سند REC-${String(receiptNo).padStart(4, '0')} — ${subscription.full_name} — ${monthLabel(subscription.due_month)} — ${value} ر.ي`);
+      const monthsText = allocations.map((allocation) => allocation.label).join('، ');
+      await audit(tx, user, 'تسجيل سند تحصيل اشتراكات', 'receipt', receiptId,
+        `سند REC-${String(receiptNo).padStart(4, '0')} — ${member.full_name} — ${value} ر.ي — الأشهر: ${monthsText}`);
       return receiptId;
     });
     return c.json({ receipt: await getReceipt(result) }, 201);
@@ -2430,12 +2507,16 @@ app.patch('/receipts/:id', async (c) => {
     where r.id = ${id} limit 1`;
   if (!rows.length) throw new HttpError(404, 'السند غير موجود');
   const current = rows[0];
-  const isSubscription = Boolean(current.subscription_id);
+  const isSingleSubscription = Boolean(current.subscription_id);
+  const isSubscription = isSingleSubscription || current.receipt_type === 'subscription';
   const value = body?.amount !== undefined
     ? amount(body.amount, { name: 'المبلغ', min: 1 })
     : Number(current.amount);
-  if (isSubscription && value !== Number(current.subscription_amount)) {
+  if (isSingleSubscription && value !== Number(current.subscription_amount)) {
     throw new HttpError(400, 'سند الاشتراك يجب أن يساوي كامل قيمة الاستحقاق. عدّل قيمة الاستحقاق أولاً.');
+  }
+  if (!isSingleSubscription && isSubscription && value !== Number(current.amount)) {
+    throw new HttpError(400, 'لا يمكن تعديل مبلغ سند تحصيل متعدد الأشهر. احذفه وأصدر سنداً جديداً.');
   }
   const paymentMethod = oneOf(body?.payment_method ?? current.payment_method, ['cash', 'bank_transfer'], { name: 'طريقة الدفع' });
   const receiptDate = body?.receipt_date !== undefined
@@ -2465,7 +2546,7 @@ app.patch('/receipts/:id', async (c) => {
         where entity_type = 'receipt' and entity_id = ${id} and id = any(${removedAttachmentIds})`;
     }
     await insertAttachments(tx, 'receipt', id, attachments, user);
-    if (isSubscription) {
+    if (isSingleSubscription) {
       await tx`update fund_subscriptions set paid_amount = ${value}, status = 'paid'
         where id = ${current.subscription_id}`;
     }
@@ -2484,7 +2565,25 @@ app.delete('/receipts/:id', async (c) => {
   const current = rows[0];
   const files = await sql.begin(async (tx) => {
     const attachmentFiles = await deleteAttachmentsForEntity(tx, 'receipt', id);
-    if (current.subscription_id) {
+    const allocations = await tx`
+      select a.subscription_id, a.amount,
+             s.amount as subscription_amount, s.paid_amount
+        from fund_receipt_allocations a
+        join fund_subscriptions s on s.id = a.subscription_id
+       where a.receipt_id = ${id}
+       for update`;
+    if (allocations.length) {
+      for (const allocation of allocations as any[]) {
+        const newPaid = Math.max(0, round2(Number(allocation.paid_amount) - Number(allocation.amount)));
+        const status = newPaid <= 0
+          ? 'unpaid'
+          : newPaid >= Number(allocation.subscription_amount) ? 'paid' : 'partial';
+        await tx`update fund_subscriptions
+          set paid_amount = ${newPaid}, status = ${status}
+          where id = ${allocation.subscription_id}`;
+      }
+      await tx`delete from fund_receipt_allocations where receipt_id = ${id}`;
+    } else if (current.subscription_id) {
       await tx`update fund_subscriptions set paid_amount = 0, status = 'unpaid'
         where id = ${current.subscription_id}`;
     }

@@ -154,6 +154,17 @@ export interface Subscription {
 
 export type ReceiptType = 'subscription' | 'donation' | 'other';
 
+export interface ReceiptAllocation {
+  id: string;
+  receipt_id: string;
+  subscription_id: string;
+  amount: number;
+  due_month: string;
+  hijri_year: number | null;
+  hijri_month: number | null;
+  subscription_amount: number;
+}
+
 export interface Receipt {
   id: string;
   receipt_no: number;
@@ -168,6 +179,7 @@ export interface Receipt {
   receipt_date: string;
   attachment_url: string | null;
   attachments?: Attachment[];
+  allocations?: ReceiptAllocation[];
   notes: string | null;
   created_by: string | null;
   created_at: string;

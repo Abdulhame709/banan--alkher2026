@@ -49,7 +49,7 @@ import { SignatureModal } from '../components/SignaturePad';
 import { AmountInput, parseAmount } from '../components/AmountInput';
 import { HijriDateInput } from '../components/HijriInputs';
 import { ReceiptVoucher } from '../components/PrintSheet';
-import type { Attachment, Member, Receipt, UploadedAttachment } from '../types';
+import type { Attachment, Member, Receipt, Subscription, UploadedAttachment } from '../types';
 
 export function ReceiptsPage() {
   const { capabilities } = useAuth();
@@ -89,6 +89,8 @@ export function ReceiptsPage() {
     attachment_url: null as string | null,
     attachments: [] as UploadedAttachment[],
   });
+  const [memberArrears, setMemberArrears] = useState<{ total: number; months: number } | null>(null);
+  const [loadingArrears, setLoadingArrears] = useState(false);
   const [editingReceipt, setEditingReceipt] = useState<Receipt | null>(null);
   const [editForm, setEditForm] = useState({
     donor_name: '',
@@ -148,6 +150,36 @@ export function ReceiptsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (form.receipt_type !== 'subscription' || !form.member_id) {
+      setMemberArrears(null);
+      return;
+    }
+    let cancelled = false;
+    setLoadingArrears(true);
+    api
+      .get<{ subscriptions: Subscription[] }>(`/members/${form.member_id}/statement`)
+      .then((payload) => {
+        if (cancelled) return;
+        const open = (payload.subscriptions ?? []).filter(
+          (row) => row.status !== 'paid' && Number(row.amount) > Number(row.paid_amount)
+        );
+        setMemberArrears({
+          total: open.reduce((sum, row) => sum + (Number(row.amount) - Number(row.paid_amount)), 0),
+          months: open.length,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setMemberArrears(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingArrears(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [form.receipt_type, form.member_id]);
+
   const totals = useMemo(
     () => ({
       count: receipts.length,
@@ -184,11 +216,15 @@ export function ReceiptsPage() {
       setFormError('أدخل مبلغاً صحيحاً أكبر من صفر (بدون كسور)');
       return;
     }
-    if (!form.member_id && !form.donor_name.trim()) {
+    if (form.receipt_type === 'subscription' && !form.member_id) {
+      setFormError('اختر العضو أولاً لتسجيل تحصيل الاشتراكات');
+      return;
+    }
+    if (form.receipt_type !== 'subscription' && !form.member_id && !form.donor_name.trim()) {
       setFormError('اسم المتبرع أو الجهة مطلوب');
       return;
     }
-    if (form.is_restricted && !form.restricted_purpose.trim()) {
+    if (form.receipt_type !== 'subscription' && form.is_restricted && !form.restricted_purpose.trim()) {
       setFormError('حدد الغرض المخصص للتبرع');
       return;
     }
@@ -197,11 +233,13 @@ export function ReceiptsPage() {
       const payload = await api.post<{ receipt: Receipt }>('/receipts', {
         receipt_type: form.receipt_type,
         member_id: form.member_id || null,
-        donor_name: form.donor_name.trim() || null,
+        donor_name: form.receipt_type === 'subscription' ? null : form.donor_name.trim() || null,
         amount: value,
         payment_method: form.payment_method,
-        is_restricted: form.is_restricted,
-        restricted_purpose: form.is_restricted ? form.restricted_purpose.trim() : null,
+        is_restricted: form.receipt_type === 'subscription' ? false : form.is_restricted,
+        restricted_purpose: form.receipt_type === 'subscription'
+          ? null
+          : form.is_restricted ? form.restricted_purpose.trim() : null,
         receipt_date: form.receipt_date,
         notes: form.notes.trim() || null,
         attachment_url: form.attachment_url,
@@ -272,7 +310,7 @@ export function ReceiptsPage() {
   }
 
   async function deleteReceipt(receipt: Receipt) {
-    if (!window.confirm(`هل تريد حذف السند ${refReceipt(receipt.receipt_no)} بمبلغ ${money(receipt.amount)}؟ سيتم إرجاع الاستحقاق إلى «غير مسدد» إذا كان سند اشتراك.`)) return;
+    if (!window.confirm(`هل تريد حذف السند ${refReceipt(receipt.receipt_no)} بمبلغ ${money(receipt.amount)}؟ سيتم عكس توزيع المبلغ على الاستحقاقات إذا كان سند اشتراك.`)) return;
     try {
       await api.del(`/receipts/${receipt.id}`);
       toast.success('تم حذف السند');
@@ -579,7 +617,7 @@ export function ReceiptsPage() {
       {open && (
         <Modal
           title="تسجيل سند قبض جديد"
-          subtitle="إيراد تبرع عام أو مخصص أو إيراد آخر"
+          subtitle="تبرع، إيراد آخر، أو تحصيل اشتراكات عضو لعدة أشهر"
           icon={<ReceiptText size={20} />}
           onClose={() => setOpen(false)}
           size="lg"
@@ -594,8 +632,9 @@ export function ReceiptsPage() {
         >
           <form id="receipt-form" onSubmit={submit} className="form-stack">
             {formError && <Alert tone="danger">{formError}</Alert>}
-            <Alert tone="info" title="سندات الاشتراكات">
-              سندات الاشتراكات تُصدر تلقائياً من صفحة الاستحقاقات الشهرية عند تسجيل السداد، لضمان ربطها بالاستحقاق الصحيح.
+            <Alert tone="info" title="تحصيل عدة أشهر">
+              اختر «تحصيل اشتراكات» ثم العضو. سيوزع النظام المبلغ تلقائياً على أقدم الأشهر غير المسددة،
+              ويمكن لسند واحد أن يغطي عدة أشهر (مثال: 5,000 لخمسة أشهر).
             </Alert>
             <div className="form-grid two">
               <Field label="نوع السند" required>
@@ -605,6 +644,7 @@ export function ReceiptsPage() {
                 >
                   <option value="donation">تبرع</option>
                   <option value="other">إيراد آخر</option>
+                  <option value="subscription">تحصيل اشتراكات (عدة أشهر)</option>
                 </Select>
               </Field>
               <Field label="تاريخ السند (هجري)" required>
@@ -616,10 +656,17 @@ export function ReceiptsPage() {
             </div>
 
             <div className="form-grid two">
-              <Field label="عضو مسجل (اختياري)" hint="اختر العضو إذا كان المتبرع من أعضاء الصندوق">
+              <Field
+                label={form.receipt_type === 'subscription' ? 'العضو' : 'عضو مسجل (اختياري)'}
+                required={form.receipt_type === 'subscription'}
+                hint={form.receipt_type === 'subscription'
+                  ? 'اختر العضو الذي تريد تحصيل اشتراكاته'
+                  : 'اختر العضو إذا كان المتبرع من أعضاء الصندوق'}
+              >
                 <Select
                   value={form.member_id}
                   onChange={(event) => setForm((current) => ({ ...current, member_id: event.target.value }))}
+                  required={form.receipt_type === 'subscription'}
                 >
                   <option value="">— ليس عضواً مسجلاً —</option>
                   {members.map((member) => (
@@ -627,15 +674,23 @@ export function ReceiptsPage() {
                   ))}
                 </Select>
               </Field>
-              <Field label="اسم المتبرع / الجهة" required={!form.member_id}>
-                <TextInput
-                  value={form.donor_name}
-                  onChange={(event) => setForm((current) => ({ ...current, donor_name: event.target.value }))}
-                  placeholder="اسم المتبرع أو الجهة"
-                  disabled={Boolean(form.member_id)}
-                />
-              </Field>
-              <Field label="المبلغ (ر.ي)" required hint="أرقام صحيحة فقط — بدون كسور">
+              {form.receipt_type !== 'subscription' && (
+                <Field label="اسم المتبرع / الجهة" required={!form.member_id}>
+                  <TextInput
+                    value={form.donor_name}
+                    onChange={(event) => setForm((current) => ({ ...current, donor_name: event.target.value }))}
+                    placeholder="اسم المتبرع أو الجهة"
+                    disabled={Boolean(form.member_id)}
+                  />
+                </Field>
+              )}
+              <Field
+                label="المبلغ (ر.ي)"
+                required
+                hint={form.receipt_type === 'subscription'
+                  ? 'بدون حد أقصى — يوزع على أقدم الأشهر غير المسددة'
+                  : 'أرقام صحيحة فقط — بدون كسور'}
+              >
                 <AmountInput
                   value={form.amount}
                   onChange={(value) => setForm((current) => ({ ...current, amount: value }))}
@@ -653,17 +708,32 @@ export function ReceiptsPage() {
               </Field>
             </div>
 
-            <label className="switch-field">
-              <input
-                type="checkbox"
-                checked={form.is_restricted}
-                onChange={(event) => setForm((current) => ({ ...current, is_restricted: event.target.checked }))}
-              />
-              <span className="switch" />
-              <span>تبرع مخصص بغرض معين</span>
-            </label>
+            {form.receipt_type === 'subscription' && form.member_id && (
+              <Alert
+                tone={memberArrears && memberArrears.total > 0 ? 'info' : 'warning'}
+                title="متأخرات العضو"
+              >
+                {loadingArrears
+                  ? 'جارٍ حساب المتأخرات…'
+                  : memberArrears && memberArrears.total > 0
+                    ? `إجمالي المتأخرات ${money(memberArrears.total)} على ${formatNumber(memberArrears.months)} شهراً. سيتم توزيع المبلغ على الأقدم أولاً.`
+                    : 'لا توجد متأخرات مستحقة. أنشئ استحقاقات الأشهر أولاً من صفحة الاشتراكات.'}
+              </Alert>
+            )}
 
-            {form.is_restricted && (
+            {form.receipt_type !== 'subscription' && (
+              <label className="switch-field">
+                <input
+                  type="checkbox"
+                  checked={form.is_restricted}
+                  onChange={(event) => setForm((current) => ({ ...current, is_restricted: event.target.checked }))}
+                />
+                <span className="switch" />
+                <span>تبرع مخصص بغرض معين</span>
+              </label>
+            )}
+
+            {form.receipt_type !== 'subscription' && form.is_restricted && (
               <Field label="الغرض المخصص" required hint="لا يجوز صرف هذا المبلغ في غير الغرض المحدد">
                 <TextInput
                   value={form.restricted_purpose}
@@ -696,7 +766,11 @@ export function ReceiptsPage() {
       {editingReceipt && (
         <Modal
           title={`تعديل السند ${refReceipt(editingReceipt.receipt_no)}`}
-          subtitle={editingReceipt.subscription_id ? 'سند اشتراك شهري — المبلغ مرتبط بكامل قيمة الاستحقاق' : 'سند تبرع أو إيراد آخر'}
+          subtitle={editingReceipt.receipt_type === 'subscription'
+            ? editingReceipt.subscription_id
+              ? 'سند اشتراك شهري — المبلغ مرتبط بكامل قيمة الاستحقاق'
+              : 'سند تحصيل متعدد الأشهر — احذفه وأصدر سنداً جديداً للتعديل'
+            : 'سند تبرع أو إيراد آخر'}
           icon={<Edit3 size={20} />}
           onClose={() => setEditingReceipt(null)}
           size="lg"
@@ -709,24 +783,35 @@ export function ReceiptsPage() {
         >
           <form id="receipt-edit-form" onSubmit={submitEdit} className="form-stack">
             {editError && <Alert tone="danger">{editError}</Alert>}
-            {editingReceipt.subscription_id && (
+            {editingReceipt.receipt_type === 'subscription' && (
               <Alert tone="info">
-                لتعديل مبلغ سند الاشتراك، عدّل قيمة الاستحقاق من صفحة الاستحقاقات الشهرية أولاً.
+                {editingReceipt.subscription_id
+                  ? 'لتعديل مبلغ سند الاشتراك، عدّل قيمة الاستحقاق من صفحة الاستحقاقات الشهرية أولاً.'
+                  : 'لا يمكن تعديل مبلغ سند تحصيل متعدد الأشهر. احذفه وأصدر سنداً جديداً بالمبلغ الصحيح.'}
               </Alert>
             )}
             <div className="form-grid two">
-              <Field label="اسم المتبرع / الجهة" required={!editingReceipt.subscription_id}>
+              <Field
+                label="اسم المتبرع / الجهة"
+                required={editingReceipt.receipt_type !== 'subscription'}
+              >
                 <TextInput
                   value={editForm.donor_name}
                   onChange={(event) => setEditForm((current) => ({ ...current, donor_name: event.target.value }))}
-                  disabled={Boolean(editingReceipt.subscription_id)}
+                  disabled={editingReceipt.receipt_type === 'subscription'}
                 />
               </Field>
-              <Field label="المبلغ (ر.ي)" required hint="أرقام صحيحة فقط">
+              <Field
+                label="المبلغ (ر.ي)"
+                required
+                hint={editingReceipt.receipt_type === 'subscription'
+                  ? 'المبلغ ثابت لسندات الاشتراكات'
+                  : 'أرقام صحيحة فقط'}
+              >
                 <AmountInput
                   value={editForm.amount}
                   onChange={(value) => setEditForm((current) => ({ ...current, amount: value }))}
-                  disabled={Boolean(editingReceipt.subscription_id)}
+                  disabled={editingReceipt.receipt_type === 'subscription'}
                   required
                 />
               </Field>
@@ -746,7 +831,7 @@ export function ReceiptsPage() {
                 />
               </Field>
             </div>
-            {!editingReceipt.subscription_id && (
+            {editingReceipt.receipt_type !== 'subscription' && (
               <>
                 <label className="switch-field">
                   <input
