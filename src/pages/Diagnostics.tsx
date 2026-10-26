@@ -1,5 +1,6 @@
 ﻿import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { Capacitor } from '@capacitor/core';
 import { Activity, ArrowRight, CheckCircle2, Copy, RefreshCw, XCircle } from 'lucide-react';
 import { Button } from '../components/ui';
 
@@ -43,7 +44,8 @@ export function DiagnosticsPage() {
     setCopied(false);
     const timeout = AbortSignal.timeout(15000);
     const results: Check[] = [];
-    const isWeb = window.location.protocol === 'http:' || window.location.protocol === 'https:';
+    const isWeb = !Capacitor.isNativePlatform()
+      && (window.location.protocol === 'http:' || window.location.protocol === 'https:');
     if (isWeb) {
       results.push(await runCheck('استضافة الصفحة', () =>
         fetch(window.location.href, { method: 'HEAD', cache: 'no-store', signal: timeout })));
