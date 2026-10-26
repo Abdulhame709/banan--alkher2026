@@ -293,19 +293,19 @@ npm run build
 npx cap sync android
 cd android
 ./gradlew assembleRelease `
-  -PbananVersionCode=15 `
-  -PbananVersionName=1.0.15
+  -PbananVersionCode=16 `
+  -PbananVersionName=1.0.16
 ```
 
 أو اترك GitHub Actions يبني وينشر تلقائياً عند الدفع إلى `main`. يظهر الإصدار في
 **Releases** باسم `apk-1.0.<رقم التشغيل>`.
 
-> الإصدار `1.0.15` موقّع بنفس keystore السابق، لذلك يُثبّت فوق النسخة القديمة
-> دون حذف البيانات. ثبّت `banan-fund-1.0.15.apk` قبل اختبار الوصول بدون VPN؛
+> الإصدار `1.0.16` موقّع بنفس keystore السابق، لذلك يُثبّت فوق النسخة القديمة
+> دون حذف البيانات. ثبّت `banan-fund-1.0.16.apk` قبل اختبار الوصول بدون VPN؛
 > النسخ القديمة قد تشير إلى مشروع Supabase القديم.
 >
-> - الرابط: <https://github.com/walid19-89/banan--alkher2026/releases/download/apk-1.0.15/banan-fund-1.0.15.apk>
-> - SHA-256: `87877DC0FC598F411C0B21C47E9D5B513F0C35DDEF2E662EA92038CE81EEDD1A`
+> - الرابط: <https://github.com/walid19-89/banan--alkher2026/releases/download/apk-1.0.16/banan-fund-1.0.16.apk>
+> - SHA-256: `66AA218730EF456097E330AA912B8FA89CCB1D71B8F4698E419CD14A817677B8`
 
 > الطباعة تعمل بشكل أفضل في نسخة الويب. تصدير CSV في APK يستخدم قائمة المشاركة
 > (Filesystem + Share).
