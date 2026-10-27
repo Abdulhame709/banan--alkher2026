@@ -20,6 +20,7 @@ import {
   Wallet,
 } from 'lucide-react';
 import { api, apiErrorMessage, downloadCsv } from '../lib/api';
+import { useAuth } from '../lib/auth';
 import { useRealtimeVersion } from '../lib/realtime';
 import { useToast } from '../lib/toast';
 import {
@@ -27,6 +28,7 @@ import {
   formatDate,
   formatNumber,
   money,
+  moneyIn,
   monthLabel,
   PAYMENT_METHOD_LABELS,
   RECEIPT_TYPE_LABELS,
@@ -91,6 +93,20 @@ interface MemberMovement {
   status: string;
   months_covered?: number;
   covered_months?: string[];
+  entry_currency?: string | null;
+  entry_amount?: number | null;
+  entry_rate?: number | null;
+  advance_credited?: number;
+}
+
+interface MemberCreditApplication {
+  id: string;
+  amount: number;
+  created_at: string;
+  subscription_id: string | null;
+  source_credit_id: string | null;
+  source_receipt_no: number | null;
+  label: string;
 }
 
 interface MemberStatement {
@@ -99,7 +115,16 @@ interface MemberStatement {
   to: string;
   opening_balance: number;
   movements: MemberMovement[];
-  totals: { dues: number; paid: number; closing_balance: number; arrears: number; arrears_months: number };
+  credit_balance: number;
+  credit_applications: MemberCreditApplication[];
+  totals: {
+    dues: number;
+    paid: number;
+    closing_balance: number;
+    arrears: number;
+    arrears_months: number;
+    credit_balance: number;
+  };
   arrears: Array<{ id: string; label: string; remaining: number; due_month: string }>;
 }
 
@@ -150,6 +175,7 @@ const firstOfYear = () =>
   fromHijri(currentHijriYear(), 1, 1) ?? `${todayISO().slice(0, 4)}-01-01`;
 
 export function ReportsPage() {
+  const { settings } = useAuth();
   const toast = useToast();
   const realtimeVersion = useRealtimeVersion();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -372,6 +398,7 @@ export function ReportsPage() {
         { label: 'استحقاقات الفترة', value: money(memberStatement.totals.dues) },
         { label: 'المسدد', value: money(memberStatement.totals.paid) },
         { label: 'إجمالي المتأخرات', value: money(memberStatement.totals.arrears) },
+        { label: 'رصيد دائن', value: money(memberStatement.credit_balance ?? memberStatement.totals.credit_balance ?? 0) },
       ];
     }
     if (tab === 'annual' && annual) {
@@ -888,6 +915,14 @@ export function ReportsPage() {
                     <div><span>استحقاقات الفترة</span><strong><DualAmount value={memberStatement.totals.dues} inline /></strong></div>
                     <div><span>المسدد</span><strong className="text-emerald"><DualAmount value={memberStatement.totals.paid} inline /></strong></div>
                     <div><span>إجمالي المتأخرات</span><strong className="danger-text"><DualAmount value={memberStatement.totals.arrears} inline /></strong></div>
+                    {Number(memberStatement.credit_balance ?? memberStatement.totals.credit_balance) !== 0 && (
+                      <div>
+                        <span>رصيد دائن (دفعات مقدمة)</span>
+                        <strong className="text-emerald">
+                          <DualAmount value={memberStatement.credit_balance ?? memberStatement.totals.credit_balance} inline />
+                        </strong>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -909,6 +944,20 @@ export function ReportsPage() {
                             {movement.covered_months && movement.covered_months.length > 1 && (
                               <small className="cell-sub">{movement.covered_months.join('، ')}</small>
                             )}
+                            {movement.entry_currency
+                              && movement.entry_currency !== (settings?.currency ?? 'ريال يمني')
+                              && movement.entry_amount !== null
+                              && movement.entry_amount !== undefined && (
+                                <small className="cell-sub">
+                                  أُدخل: {moneyIn(movement.entry_amount, movement.entry_currency)}
+                                  {' × '}{formatNumber(movement.entry_rate ?? 0)}
+                                </small>
+                              )}
+                            {Number(movement.advance_credited) > 0 && (
+                              <small className="cell-sub">
+                                منها رصيد دائن للأشهر القادمة: {money(movement.advance_credited)}
+                              </small>
+                            )}
                           </td>
                           <td className="text-gold">{movement.debit ? money(movement.debit) : '—'}</td>
                           <td className="text-emerald">{movement.credit ? money(movement.credit) : '—'}</td>
@@ -928,6 +977,25 @@ export function ReportsPage() {
                     <div className="arrears-chips">
                       {memberStatement.arrears.map((row) => (
                         <span key={row.id} className="arrears-chip"><b>{row.label}</b><em>{money(row.remaining)}</em></span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {(memberStatement.credit_applications ?? []).length > 0 && (
+                  <div className="member-arrears">
+                    <h4>
+                      <Wallet size={16} /> خصومات الرصيد الدائن المطبَّقة
+                      {' '}({formatNumber((memberStatement.credit_applications ?? []).length)} عملية)
+                    </h4>
+                    <div className="arrears-chips">
+                      {(memberStatement.credit_applications ?? []).map((row) => (
+                        <span key={row.id} className="arrears-chip">
+                          <b>{row.label}</b>
+                          <em>{money(row.amount)}</em>
+                          {row.source_receipt_no ? (
+                            <small>من السند {refReceipt(row.source_receipt_no)}</small>
+                          ) : null}
+                        </span>
                       ))}
                     </div>
                   </div>
@@ -1110,6 +1178,27 @@ export function ReportsPage() {
               </table>
             </div>
           )}
+          {(memberStatement.credit_applications ?? []).length > 0 && (
+            <div className="print-arrears">
+              <h4>خصومات الرصيد الدائن المطبَّقة</h4>
+              <table className="print-table compact">
+                <thead><tr><th>الشهر</th><th>المبلغ المخصوم</th><th>سند الرصيد</th></tr></thead>
+                <tbody>
+                  {(memberStatement.credit_applications ?? []).map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.label}</td>
+                      <td>{money(row.amount, false)}</td>
+                      <td>{row.source_receipt_no ? refReceipt(row.source_receipt_no) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="print-note">
+            الرصيد الدائن للعضو: {money(memberStatement.credit_balance ?? 0, false)} — يُخصم تلقائياً من
+            استحقاقات الأشهر القادمة ولا يُعد متأخراً عليه.
+          </div>
         </ReportPrint>
       )}
 

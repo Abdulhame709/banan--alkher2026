@@ -491,6 +491,11 @@ export function MembersPage() {
                       ) : (
                         <Badge tone="success">مسدد</Badge>
                       )}
+                      {Number(member.advance_balance) > 0 && (
+                        <small className="cell-sub text-emerald">
+                          رصيد دائن: {money(member.advance_balance)}
+                        </small>
+                      )}
                     </td>
                     <td>
                       <Badge tone={member.active ? 'success' : 'neutral'} dot>

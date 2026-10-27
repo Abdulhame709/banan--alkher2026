@@ -9,6 +9,7 @@ import {
   EXPENSE_CATEGORY_LABELS,
   formatDate,
   formatDateTime,
+  formatNumber,
   money,
   moneyIn,
   monthLabel,
@@ -249,6 +250,15 @@ export function ReceiptVoucher({
               ≈ {moneyIn(secondaryAmount(receipt.amount, settings.exchange_rate), settings.secondary_currency || 'ريال سعودي')}
             </small>
           )}
+          {receipt.entry_currency
+            && receipt.entry_currency !== (settings?.currency ?? 'ريال يمني')
+            && receipt.entry_amount !== null
+            && receipt.entry_amount !== undefined && (
+              <small className="voucher-secondary">
+                أُدخل المبلغ: {moneyIn(receipt.entry_amount, receipt.entry_currency)}
+                {' '}بسعر صرف {formatNumber(receipt.entry_rate ?? 0)}
+              </small>
+            )}
         </div>
 
         <dl className="voucher-grid">
@@ -264,6 +274,15 @@ export function ReceiptVoucher({
                 : monthLabel(String(allocation.due_month).slice(0, 7))).join('، ')}</dd>
             </div>
           ) : null}
+          {Number(receipt.advance_credited) > 0 && (
+            <div className="span-2">
+              <dt>رصيد دائن للأشهر القادمة</dt>
+              <dd>
+                {money(receipt.advance_credited)} — فائض المبلغ عن المتأخرات المستحقة،
+                يُخصم تلقائياً من استحقاقات الأشهر القادمة.
+              </dd>
+            </div>
+          )}
           {receipt.notes && <div className="span-2"><dt>ملاحظات</dt><dd>{receipt.notes}</dd></div>}
         </dl>
 
@@ -437,6 +456,13 @@ export function MemberStatementPrint({
           <div><span>إجمالي المستحقات</span><strong>{money(totalDue)}</strong>{secondary(totalDue) && <small className="dual-secondary">{secondary(totalDue)}</small>}</div>
           <div><span>إجمالي المسدد</span><strong className="text-emerald">{money(totalPaid)}</strong>{secondary(totalPaid) && <small className="dual-secondary">{secondary(totalPaid)}</small>}</div>
           <div><span>المتأخرات</span><strong className="text-danger">{money(arrears)}</strong>{secondary(arrears) && <small className="dual-secondary">{secondary(arrears)}</small>}</div>
+          {Number(member.advance_balance) > 0 && (
+            <div>
+              <span>رصيد دائن (دفعات مقدمة)</span>
+              <strong className="text-emerald">{money(member.advance_balance)}</strong>
+              {secondary(member.advance_balance) && <small className="dual-secondary">{secondary(member.advance_balance)}</small>}
+            </div>
+          )}
         </div>
 
         <h3 className="print-subtitle">تفصيل الاستحقاقات الشهرية</h3>
@@ -461,7 +487,12 @@ export function MemberStatementPrint({
                 <tr key={row.id}>
                   <td>{monthLabel(row.due_month)}</td>
                   <td>{money(row.amount, false)}</td>
-                  <td>{money(row.paid_amount, false)}</td>
+                  <td>
+                    {money(row.paid_amount, false)}
+                    {Number(row.credit_applied) > 0 && (
+                      <small className="cell-sub">منها رصيد دائن: {money(row.credit_applied, false)}</small>
+                    )}
+                  </td>
                   <td>{money(row.amount - row.paid_amount, false)}</td>
                   <td>{status.label}</td>
                   <td>{row.receipts?.map((receipt) => refReceipt(receipt.receipt_no)).join('، ') || '—'}</td>
@@ -502,7 +533,22 @@ export function MemberStatementPrint({
                 <td>{receipt.receipt_type === 'subscription'
                   ? (receipt.subscription_id ? 'اشتراك شهري' : 'سداد اشتراكات')
                   : receipt.receipt_type === 'donation' ? 'تبرع' : 'أخرى'}</td>
-                <td>{money(receipt.amount, false)}</td>
+                <td>
+                  {money(receipt.amount, false)}
+                  {receipt.entry_currency
+                    && receipt.entry_currency !== (settings?.currency ?? 'ريال يمني')
+                    && receipt.entry_amount !== null
+                    && receipt.entry_amount !== undefined && (
+                      <small className="cell-sub">
+                        أُدخل: {moneyIn(receipt.entry_amount, receipt.entry_currency)}
+                      </small>
+                    )}
+                  {Number(receipt.advance_credited) > 0 && (
+                    <small className="cell-sub">
+                      رصيد دائن: {money(receipt.advance_credited, false)}
+                    </small>
+                  )}
+                </td>
                 <td>{PAYMENT_METHOD_LABELS[receipt.payment_method]}</td>
               </tr>
             ))}
@@ -511,6 +557,7 @@ export function MemberStatementPrint({
 
         <div className="print-note">
           المتأخرات المذكورة أعلاه هي مبالغ مستحقة على العضو ولا تُعد جزءاً من الرصيد النقدي للصندوق حتى يتم تحصيلها.
+          الرصيد الدائن (إن وجد) هو مبالغ سُددت مقدماً وتُخصم تلقائياً من استحقاقات الأشهر القادمة.
           العملة: {settings?.currency ?? 'ريال يمني'}.
         </div>
 

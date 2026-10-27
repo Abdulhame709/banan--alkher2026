@@ -31,6 +31,8 @@ const BACKUP_TABLES = [
   'fund_subscription_exclusions',
   'fund_subscriptions',
   'fund_receipts',
+  'fund_receipt_allocations',
+  'fund_member_credit_ledger',
   'fund_expense_requests',
   'fund_expense_approvals',
   'fund_attachments',
@@ -540,21 +542,64 @@ async function ensureDuesForMonth(
       where not exists (select 1 from existing x where x.member_id = e.id)
         and not exists (select 1 from excluded x where x.member_id = e.id)
       on conflict (member_id, due_month) do nothing
-      returning id
+      returning id, member_id
     )
     select
       (select count(*)::int from target) as total,
-      (select count(*)::int from inserted) as generated`;
+      (select count(*)::int from inserted) as generated,
+      (select coalesce(array_agg(distinct member_id), '{}'::uuid[]) from inserted) as member_ids`;
 
   const total = Number(result[0]?.total ?? 0);
   const generated = Number(result[0]?.generated ?? 0);
-  return { generated, skipped: Math.max(0, total - generated), total, dueMonth };
+  const generatedMemberIds = Array.isArray(result[0]?.member_ids)
+    ? result[0].member_ids.map((id: unknown) => String(id))
+    : [];
+  return { generated, skipped: Math.max(0, total - generated), total, dueMonth, memberIds: generatedMemberIds };
+}
+
+/**
+ * Apply a member's available credit to their oldest unpaid dues. The SQL
+ * function is idempotent and locks the member row so concurrent requests cannot
+ * spend the same credit twice.
+ */
+async function applyMemberCreditsForMembers(db: any, memberIds: string[], userId?: string | null) {
+  const unique = [...new Set(memberIds.filter(Boolean))];
+  for (const memberId of unique) {
+    await db`select public.apply_member_credits(${memberId}::uuid, ${userId ?? null}::uuid)`;
+  }
+  return unique.length;
+}
+
+/** Apply credit for every member who has credit and at least one open due. */
+async function applyOutstandingMemberCredits(db: any, userId?: string | null) {
+  const rows = await db`
+    select distinct l.member_id
+      from public.fund_member_credit_ledger l
+     where l.kind = 'advance'
+       and exists (
+         select 1
+           from public.fund_subscriptions s
+          where s.member_id = l.member_id
+            and s.status <> 'paid'
+            and s.paid_amount < s.amount
+       )`;
+  return applyMemberCreditsForMembers(
+    db,
+    rows.map((row: any) => String(row.member_id)),
+    userId
+  );
 }
 
 async function ensureCurrentMonthDues(db: any) {
   const settings = await getSettings(db);
-  if (!settings.auto_dues_enabled) return { generated: 0, skipped: 0, disabled: true };
-  return ensureDuesForMonth(db, currentHijriMonth());
+  let result: any = { generated: 0, skipped: 0, disabled: true, memberIds: [] };
+  if (settings.auto_dues_enabled) {
+    result = await ensureDuesForMonth(db, currentHijriMonth());
+  }
+  // Credit is applied even when automatic due generation is disabled, because
+  // the member may already have open months and available credit.
+  await applyOutstandingMemberCredits(db);
+  return result;
 }
 
 function pageParams(query: Record<string, string>) {
@@ -946,6 +991,22 @@ async function getReceipt(id: string) {
       join fund_subscriptions s on s.id = a.subscription_id
      where a.receipt_id = ${id}
      order by s.due_month asc`;
+  const creditRows = await sql`
+    select coalesce(sum(amount), 0) as advance_credited
+      from fund_member_credit_ledger
+     where receipt_id = ${id} and kind = 'advance'`;
+  receipt.advance_credited = round2(creditRows[0]?.advance_credited ?? 0);
+  receipt.credit_applications = await sql`
+    select l.id, l.amount, l.subscription_id,
+           s.due_month, s.hijri_year, s.hijri_month
+      from fund_member_credit_ledger l
+      join fund_subscriptions s on s.id = l.subscription_id
+     where l.kind = 'apply'
+       and l.source_credit_id in (
+         select id from fund_member_credit_ledger
+          where receipt_id = ${id} and kind = 'advance'
+       )
+     order by s.due_month asc`;
   return receipt;
 }
 
@@ -970,7 +1031,12 @@ async function memberStatement(memberId: string) {
   const member = memberRows[0];
   const subscriptions = await sql`
     select s.*,
-           coalesce((select sum(r.amount) from fund_receipts r where r.subscription_id = s.id), 0) as receipted
+           coalesce((select sum(r.amount) from fund_receipts r where r.subscription_id = s.id), 0) as receipted,
+           coalesce((
+             select -sum(l.amount)
+               from fund_member_credit_ledger l
+              where l.subscription_id = s.id and l.kind = 'apply'
+           ), 0) as credit_applied
       from fund_subscriptions s
      where s.member_id = ${memberId}
      order by s.due_month asc`;
@@ -978,6 +1044,14 @@ async function memberStatement(memberId: string) {
     select * from fund_receipts
      where member_id = ${memberId}
      order by receipt_date desc, receipt_no desc`;
+  const creditLedger = await sql`
+    select l.id, l.kind, l.amount, l.receipt_id, l.subscription_id,
+           l.source_credit_id, l.note, l.created_at,
+           s.due_month, s.hijri_year, s.hijri_month
+      from fund_member_credit_ledger l
+      left join fund_subscriptions s on s.id = l.subscription_id
+     where l.member_id = ${memberId}
+     order by l.created_at asc, l.id asc`;
   const byMonth = new Map<string, any[]>();
   for (const receipt of receipts) {
     if (!receipt.subscription_id) continue;
@@ -987,7 +1061,7 @@ async function memberStatement(memberId: string) {
   for (const subscription of subscriptions) {
     subscription.receipts = byMonth.get(subscription.id) ?? [];
   }
-  return { member, subscriptions, receipts };
+  return { member, subscriptions, receipts, credit_ledger: creditLedger };
 }
 
 async function cashLedger(from: string, to: string) {
@@ -1202,7 +1276,7 @@ async function rateLimit(key: string, limit: number, windowSeconds: number) {
 
 const app = new Hono().basePath('/api');
 const APP_ORIGINS = (Deno.env.get('APP_ORIGINS')
-  ?? 'https://walid19-89.github.io,https://abdulhame709.github.io,http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173,http://127.0.0.1:4173,https://localhost,capacitor://localhost')
+  ?? 'https://banan-fund.netlify.app,https://walid19-89.github.io,https://abdulhame709.github.io,http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173,http://127.0.0.1:4173,https://localhost,capacitor://localhost')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
@@ -1642,11 +1716,18 @@ app.get('/dashboard', async (c) => {
   const hijriMonth = currentHijriMonth();
   const dueMonth = fromHijri(hijriMonth.year, hijriMonth.month, 1);
   if (!dueMonth) throw new HttpError(400, 'تعذر تحويل الشهر الهجري إلى تاريخ ميلادي');
+  // Generate this month's dues first so any available member credit is applied
+  // before the dashboard snapshot is calculated. Passing false to the RPC
+  // avoids generating the same dues twice.
+  await ensureCurrentMonthDues(sql);
   const dashboardRows = await sql`select public.fund_dashboard_payload(
-    true, ${hijriMonth.year}, ${hijriMonth.month}, ${dueMonth}::date, ${todayISO().slice(0, 7)}
+    false, ${hijriMonth.year}, ${hijriMonth.month}, ${dueMonth}::date, ${todayISO().slice(0, 7)}
   )::text as data`;
   const data = JSON.parse(dashboardRows[0].data);
   const settings = data.settings ?? {};
+  const creditRows = await sql`
+    select coalesce(sum(amount), 0) as total from public.fund_member_credit_ledger`;
+  const memberCredits = round2(creditRows[0]?.total ?? 0);
   const rawPosition = data.position;
   const position = {
     opening_balance: round2(rawPosition.opening_balance),
@@ -1722,6 +1803,7 @@ app.get('/dashboard', async (c) => {
     },
     approved_requests: approved,
     recent_receipts: recentReceipts,
+    member_credits: memberCredits,
     members: {
       total: Number(memberStatsRow.total ?? 0),
       active: Number(memberStatsRow.active ?? 0),
@@ -2053,6 +2135,8 @@ app.post('/subscriptions/generate', async (c) => {
       generated += monthResult.generated;
       skipped += monthResult.skipped;
       total = Math.max(total, monthResult.total);
+      // A newly generated month can immediately consume the member's credit.
+      await applyMemberCreditsForMembers(tx, monthResult.memberIds, user.id);
     }
     await audit(tx, user, 'توليد استحقاقات هجرية', 'subscription', months[0]?.key ?? null,
       `توليد استحقاقات من ${hijriMonthLabel(from.key)} إلى ${hijriMonthLabel(to.key)} — ` +
@@ -2141,11 +2225,14 @@ app.patch('/subscriptions/:id', async (c) => {
     hijriMonth = month.month;
     dueMonth = converted;
   }
-  const status = Number(current.paid_amount) >= newAmount ? 'paid' : 'unpaid';
+  const status = Number(current.paid_amount) >= newAmount
+    ? 'paid'
+    : Number(current.paid_amount) > 0 ? 'partial' : 'unpaid';
   await sql`update fund_subscriptions
     set amount = ${newAmount}, hijri_year = ${hijriYear}, hijri_month = ${hijriMonth},
         due_month = ${dueMonth}, status = ${status}
     where id = ${id}`;
+  await applyMemberCreditsForMembers(sql, [current.member_id], user.id);
   await audit(sql, user, 'تعديل استحقاق شهري', 'subscription', id,
     `تعديل استحقاق ${hijriMonthLabel(hijriMonthKey(Number(hijriYear), Number(hijriMonth)))} — القيمة ${newAmount} ر.ي`);
   return c.json({ subscription: (await sql`select * from fund_subscriptions where id = ${id}`)[0] });
@@ -2159,13 +2246,26 @@ app.delete('/subscriptions/:id', async (c) => {
   if (!rows.length) throw new HttpError(404, 'الاستحقاق غير موجود');
   const current = rows[0];
   const receipts = await sql`select 1 from fund_receipts where subscription_id = ${id} limit 1`;
-  if (receipts.length || Number(current.paid_amount) > 0) {
+  const allocations = await sql`select 1 from fund_receipt_allocations where subscription_id = ${id} limit 1`;
+  const creditRows = await sql`
+    select coalesce(-sum(amount), 0) as applied
+      from fund_member_credit_ledger
+     where subscription_id = ${id} and kind = 'apply'`;
+  const creditApplied = round2(creditRows[0]?.applied ?? 0);
+  if (receipts.length || allocations.length) {
     throw new HttpError(409, 'لا يمكن حذف استحقاق عليه سندات قبض. احذف السندات أولاً.');
+  }
+  if (Number(current.paid_amount) > creditApplied + 0.001) {
+    throw new HttpError(409, 'لا يمكن حذف استحقاق مسدد بغير رصيد دائن. احذف سندات القبض أولاً.');
   }
   const hijri = current.hijri_year && current.hijri_month
     ? { year: Number(current.hijri_year), month: Number(current.hijri_month) }
     : toHijri(current.due_month);
   await sql.begin(async (tx) => {
+    // Releasing credit-paid amounts returns them to the member balance so they
+    // can settle another open month.
+    await tx`delete from fund_member_credit_ledger
+      where subscription_id = ${id} and kind = 'apply'`;
     // Tombstone the deleted month so ensureDuesForMonth() does not recreate it
     // on the next dashboard/subscriptions load.
     await tx`insert into fund_subscription_exclusions
@@ -2174,6 +2274,7 @@ app.delete('/subscriptions/:id', async (c) => {
       on conflict (member_id, hijri_year, hijri_month) do update
         set reason = excluded.reason, created_by = excluded.created_by, created_at = now()`;
     await tx`delete from fund_subscriptions where id = ${id}`;
+    await applyMemberCreditsForMembers(tx, [current.member_id], user.id);
     await audit(tx, user, 'حذف استحقاق شهري', 'subscription', id,
       `حذف استحقاق ${hijriMonthLabel(hijriMonthKey(hijri.year, hijri.month))} — العضو ${current.member_id}`);
   });
@@ -2191,31 +2292,41 @@ app.post('/subscriptions/bulk-delete', async (c) => {
   if (ids.length > 500) throw new HttpError(400, 'الحد الأقصى 500 استحقاق في العملية الواحدة');
 
   const rows = await sql`select s.*, m.full_name, m.member_no,
-      (select count(*) from fund_receipts r where r.subscription_id = s.id) as receipts_count
+      (select count(*) from fund_receipts r where r.subscription_id = s.id) as receipts_count,
+      (select count(*) from fund_receipt_allocations a where a.subscription_id = s.id) as allocations_count,
+      coalesce((
+        select -sum(l.amount) from fund_member_credit_ledger l
+         where l.subscription_id = s.id and l.kind = 'apply'
+      ), 0) as credit_applied
     from fund_subscriptions s join fund_members m on m.id = s.member_id
     where s.id = any(${ids})`;
-  const eligible = rows.filter((row: any) =>
-    !Number(row.receipts_count) && Number(row.paid_amount) <= 0
-  );
-  const blocked = rows.filter((row: any) =>
-    Number(row.receipts_count) > 0 || Number(row.paid_amount) > 0
-  );
+  const canDelete = (row: any) =>
+    !Number(row.receipts_count) &&
+    !Number(row.allocations_count) &&
+    Number(row.paid_amount) <= Number(row.credit_applied) + 0.001;
+  const eligible = rows.filter(canDelete);
+  const blocked = rows.filter((row: any) => !canDelete(row));
   const found = new Set(rows.map((row: any) => row.id));
   const missing = ids.filter((id) => !found.has(id));
 
   if (eligible.length) {
     await sql.begin(async (tx) => {
+      const memberIds = new Set<string>();
       for (const row of eligible) {
         const hijri = row.hijri_year && row.hijri_month
           ? { year: Number(row.hijri_year), month: Number(row.hijri_month) }
           : toHijri(row.due_month);
+        await tx`delete from fund_member_credit_ledger
+          where subscription_id = ${row.id} and kind = 'apply'`;
         await tx`insert into fund_subscription_exclusions
             (member_id, hijri_year, hijri_month, reason, created_by)
           values (${row.member_id}, ${hijri.year}, ${hijri.month}, 'حذف جماعي للاستحقاقات', ${user.id})
           on conflict (member_id, hijri_year, hijri_month) do update
             set reason = excluded.reason, created_by = excluded.created_by, created_at = now()`;
         await tx`delete from fund_subscriptions where id = ${row.id}`;
+        memberIds.add(String(row.member_id));
       }
+      await applyMemberCreditsForMembers(tx, [...memberIds], user.id);
       await audit(tx, user, 'حذف استحقاقات محددة', 'subscription', null,
         `حذف ${eligible.length} استحقاق: ${eligible.map((row: any) => `${row.full_name} (${row.member_no})`).join('، ')}`);
     });
@@ -2275,7 +2386,11 @@ app.get('/receipts', async (c) => {
   }
   const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
   const rows = await sql.unsafe(
-    `select r.*, m.full_name as member_name, m.member_no, p.full_name as created_by_name
+    `select r.*, m.full_name as member_name, m.member_no, p.full_name as created_by_name,
+            coalesce((
+              select sum(l.amount) from fund_member_credit_ledger l
+               where l.receipt_id = r.id and l.kind = 'advance'
+            ), 0) as advance_credited
        from fund_receipts r
        left join fund_members m on m.id = r.member_id
        left join fund_user_profiles p on p.user_id = r.created_by
@@ -2307,6 +2422,43 @@ app.get('/receipts/:id', async (c) => {
   return c.json({ receipt });
 });
 
+/**
+ * Convert the amount entered by the user into the primary accounting currency.
+ * `amount` is always the number typed in the selected currency. Accounting
+ * columns store the converted primary amount; the original entry is preserved
+ * separately for printing and audit.
+ */
+async function resolveReceiptEntry(db: any, rawAmount: unknown, rawCurrency: unknown) {
+  const settings = await getSettings(db);
+  const currency = oneOf(rawCurrency ?? 'primary', ['primary', 'secondary'], {
+    name: 'عملة المبلغ',
+  });
+  const entered = amount(rawAmount, { name: 'المبلغ' });
+  if (currency === 'primary') {
+    return {
+      value: entered,
+      entryCurrency: settings.currency,
+      entryAmount: entered,
+      entryRate: 1,
+      settings,
+    };
+  }
+  const rate = Number(settings.exchange_rate ?? 0);
+  if (!settings.secondary_enabled || rate <= 0) {
+    throw new HttpError(400, 'العملة الثانية غير مفعلة أو سعر الصرف غير محدد. حدّث الإعدادات أولاً.');
+  }
+  const value = Math.round(entered * rate);
+  if (value < 1) throw new HttpError(400, 'المبلغ المحول إلى العملة الأساسية أقل من الحد الأدنى');
+  if (value > 1_000_000_000_000) throw new HttpError(400, 'المبلغ المحول أكبر من الحد المسموح');
+  return {
+    value,
+    entryCurrency: settings.secondary_currency,
+    entryAmount: entered,
+    entryRate: rate,
+    settings,
+  };
+}
+
 app.post('/receipts', async (c) => {
   const user = await requireUser(c);
   requireCap(user, 'receipts.add');
@@ -2315,7 +2467,8 @@ app.post('/receipts', async (c) => {
   const receiptType = oneOf(body?.receipt_type, ['subscription', 'donation', 'other'], { name: 'نوع السند' });
   const paymentMethod = oneOf(body?.payment_method ?? 'cash', ['cash', 'bank_transfer'], { name: 'طريقة الدفع' });
   const receiptDate = isoDate(body?.receipt_date, { name: 'تاريخ السند' });
-  const value = amount(body?.amount, { name: 'المبلغ' });
+  const entry = await resolveReceiptEntry(sql, body?.amount, body?.amount_currency);
+  const value = entry.value;
   const isRestricted = bool(body?.is_restricted, false);
   const restrictedPurpose = isRestricted
     ? str(body?.restricted_purpose, { name: 'الغرض المخصص', required: true, max: 250 })
@@ -2350,9 +2503,11 @@ app.post('/receipts', async (c) => {
         const receiptNo = await nextSequence(tx, 'receipt');
         await tx`insert into fund_receipts
           (id, receipt_no, receipt_type, member_id, subscription_id, donor_name, amount,
+           entry_currency, entry_amount, entry_rate,
            payment_method, is_restricted, restricted_purpose, receipt_date, attachment_url, notes, created_by)
           values (${receiptId}, ${receiptNo}, 'subscription', ${memberId}, ${subscriptionId}, ${donorName},
-           ${value}, ${paymentMethod}, false, null, ${receiptDate}, ${attachment}, ${notes}, ${user.id})`;
+           ${value}, ${entry.entryCurrency}, ${entry.entryAmount}, ${entry.entryRate},
+           ${paymentMethod}, false, null, ${receiptDate}, ${attachment}, ${notes}, ${user.id})`;
         await insertAttachments(tx, 'receipt', receiptId, attachments, user);
         await audit(tx, user, 'تسجيل سند قبض اشتراك', 'receipt', receiptId,
           `سند REC-${String(receiptNo).padStart(4, '0')} — ${subscription.full_name} — ${monthLabel(subscription.due_month)} — ${value} ر.ي`);
@@ -2380,18 +2535,9 @@ app.post('/receipts', async (c) => {
          order by due_month asc, created_at asc
          for update`;
 
-      const totalOutstanding = round2(dues.reduce(
-        (sum: number, row: any) => sum + (Number(row.amount) - Number(row.paid_amount)),
-        0
-      ));
-      if (totalOutstanding <= 0) {
-        throw new HttpError(409, 'لا توجد متأخرات مستحقة على هذا العضو');
-      }
-      if (value > totalOutstanding) {
-        throw new HttpError(400,
-          `المبلغ أكبر من إجمالي المتأخرات (${moneyLabel(totalOutstanding)}). أنشئ استحقاقات الأشهر الناقصة أولاً أو أدخل مبلغاً لا يتجاوز الإجمالي.`);
-      }
-
+      // Overpayment is allowed: settle the oldest dues first, then keep the
+      // remainder as a credit balance for future months. No minimum arrears and
+      // no upper limit tied to the current arrears.
       let left = value;
       const allocations: Array<{ subscription_id: string; amount: number; label: string }> = [];
       for (const due of dues as any[]) {
@@ -2416,17 +2562,28 @@ app.post('/receipts', async (c) => {
       const receiptNo = await nextSequence(tx, 'receipt');
       await tx`insert into fund_receipts
         (id, receipt_no, receipt_type, member_id, subscription_id, donor_name, amount,
+         entry_currency, entry_amount, entry_rate,
          payment_method, is_restricted, restricted_purpose, receipt_date, attachment_url, notes, created_by)
         values (${receiptId}, ${receiptNo}, 'subscription', ${memberId}, null, ${member.full_name},
-         ${value}, ${paymentMethod}, false, null, ${receiptDate}, ${attachment}, ${notes}, ${user.id})`;
+         ${value}, ${entry.entryCurrency}, ${entry.entryAmount}, ${entry.entryRate},
+         ${paymentMethod}, false, null, ${receiptDate}, ${attachment}, ${notes}, ${user.id})`;
       for (const allocation of allocations) {
         await tx`insert into fund_receipt_allocations (receipt_id, subscription_id, amount)
           values (${receiptId}, ${allocation.subscription_id}, ${allocation.amount})`;
       }
+      let advanceCredited = 0;
+      if (left > 0) {
+        advanceCredited = round2(left);
+        await tx`insert into fund_member_credit_ledger
+          (member_id, receipt_id, kind, amount, note, created_by)
+          values (${memberId}, ${receiptId}, 'advance', ${advanceCredited},
+            ${`فائض سند REC-${String(receiptNo).padStart(4, '0')} يُقيَّد رصيداً دائناً للأشهر القادمة`}, ${user.id})`;
+      }
       await insertAttachments(tx, 'receipt', receiptId, attachments, user);
       const monthsText = allocations.map((allocation) => allocation.label).join('، ');
       await audit(tx, user, 'تسجيل سند تحصيل اشتراكات', 'receipt', receiptId,
-        `سند REC-${String(receiptNo).padStart(4, '0')} — ${member.full_name} — ${value} ر.ي — الأشهر: ${monthsText}`);
+        `سند REC-${String(receiptNo).padStart(4, '0')} — ${member.full_name} — ${value} ر.ي` +
+        ` — الأشهر: ${monthsText || 'لا يوجد'}${advanceCredited > 0 ? ` — رصيد دائن: ${advanceCredited} ر.ي` : ''}`);
       return receiptId;
     });
     return c.json({ receipt: await getReceipt(result) }, 201);
@@ -2444,8 +2601,10 @@ app.post('/receipts', async (c) => {
     const receiptNo = await nextSequence(tx, 'receipt');
     await tx`insert into fund_receipts
       (id, receipt_no, receipt_type, member_id, subscription_id, donor_name, amount,
+       entry_currency, entry_amount, entry_rate,
        payment_method, is_restricted, restricted_purpose, receipt_date, attachment_url, notes, created_by)
       values (${id}, ${receiptNo}, ${receiptType}, ${memberId}, null, ${donorName}, ${value},
+       ${entry.entryCurrency}, ${entry.entryAmount}, ${entry.entryRate},
        ${paymentMethod}, ${isRestricted}, ${restrictedPurpose}, ${receiptDate}, ${attachment}, ${notes}, ${user.id})`;
     await insertAttachments(tx, 'receipt', id, attachments, user);
     await audit(tx, user, 'تسجيل سند قبض', 'receipt', id,
@@ -2461,6 +2620,7 @@ app.post('/receipts/import', async (c) => {
   const rows = Array.isArray(body?.receipts) ? body.receipts : [];
   if (!rows.length) throw new HttpError(400, 'ملف الاستيراد لا يحتوي على سندات');
   if (rows.length > 500) throw new HttpError(400, 'الحد الأقصى 500 سند في الاستيراد الواحد');
+  const importSettings = await getSettings();
   const result = { imported: 0, skipped: 0, errors: [] as string[] };
 
   for (const [index, raw] of rows.entries()) {
@@ -2495,8 +2655,10 @@ app.post('/receipts/import', async (c) => {
         const receiptNo = await nextSequence(tx, 'receipt');
         await tx`insert into fund_receipts
           (id, receipt_no, receipt_type, member_id, subscription_id, donor_name, amount,
+           entry_currency, entry_amount, entry_rate,
            payment_method, is_restricted, restricted_purpose, receipt_date, notes, created_by)
           values (${id}, ${receiptNo}, ${receiptType}, ${memberId}, null, ${donorName}, ${value},
+           ${importSettings.currency}, ${value}, 1,
            ${paymentMethod}, ${isRestricted}, ${restrictedPurpose}, ${receiptDate}, ${notes}, ${user.id})`;
         await insertAttachments(tx, 'receipt', id, attachments, user);
         await audit(tx, user, 'استيراد سند قبض', 'receipt', id,
@@ -2523,13 +2685,14 @@ app.patch('/receipts/:id', async (c) => {
     where r.id = ${id} limit 1`;
   if (!rows.length) throw new HttpError(404, 'السند غير موجود');
   const current = rows[0];
+  const settings = await getSettings();
   const isSingleSubscription = Boolean(current.subscription_id);
   const isSubscription = isSingleSubscription || current.receipt_type === 'subscription';
   const value = body?.amount !== undefined
     ? amount(body.amount, { name: 'المبلغ', min: 1 })
     : Number(current.amount);
-  if (isSingleSubscription && value !== Number(current.subscription_amount)) {
-    throw new HttpError(400, 'سند الاشتراك يجب أن يساوي كامل قيمة الاستحقاق. عدّل قيمة الاستحقاق أولاً.');
+  if (isSingleSubscription && value !== Number(current.amount)) {
+    throw new HttpError(400, 'لا يمكن تعديل مبلغ سند الاشتراك. احذفه وأصدر سنداً جديداً أو عدّل قيمة الاستحقاق أولاً.');
   }
   if (!isSingleSubscription && isSubscription && value !== Number(current.amount)) {
     throw new HttpError(400, 'لا يمكن تعديل مبلغ سند تحصيل متعدد الأشهر. احذفه وأصدر سنداً جديداً.');
@@ -2552,8 +2715,15 @@ app.patch('/receipts/:id', async (c) => {
     ? current.donor_name
     : (str(body?.donor_name ?? current.donor_name, { name: 'اسم المتبرع', required: true, max: 150 }));
 
+  const entryCurrency = current.entry_currency ?? settings.currency;
+  const entryRate = Number(current.entry_rate ?? 0) > 0 ? Number(current.entry_rate) : 1;
+  const entryAmount = current.entry_currency && current.entry_currency !== settings.currency
+    ? round2(value / entryRate)
+    : value;
+
   await sql.begin(async (tx) => {
     await tx`update fund_receipts set donor_name = ${donorName}, amount = ${value},
+      entry_currency = ${entryCurrency}, entry_amount = ${entryAmount}, entry_rate = ${entryRate},
       payment_method = ${paymentMethod}, is_restricted = ${isRestricted},
       restricted_purpose = ${restrictedPurpose}, receipt_date = ${receiptDate},
       attachment_url = ${attachment}, notes = ${notes} where id = ${id}`;
@@ -2562,10 +2732,8 @@ app.patch('/receipts/:id', async (c) => {
         where entity_type = 'receipt' and entity_id = ${id} and id = any(${removedAttachmentIds})`;
     }
     await insertAttachments(tx, 'receipt', id, attachments, user);
-    if (isSingleSubscription) {
-      await tx`update fund_subscriptions set paid_amount = ${value}, status = 'paid'
-        where id = ${current.subscription_id}`;
-    }
+    // Do not overwrite paid_amount here. A single-subscription receipt may be
+    // the cash part of a due that was already partially settled by credit.
     await audit(tx, user, 'تعديل سند قبض', 'receipt', id,
       `تعديل السند REC-${String(current.receipt_no).padStart(4, '0')} — المبلغ ${value} ر.ي`);
   });
@@ -2600,10 +2768,58 @@ app.delete('/receipts/:id', async (c) => {
       }
       await tx`delete from fund_receipt_allocations where receipt_id = ${id}`;
     } else if (current.subscription_id) {
-      await tx`update fund_subscriptions set paid_amount = 0, status = 'unpaid'
-        where id = ${current.subscription_id}`;
+      // Subtract only the cash amount of this receipt. The due may already
+      // have been partially settled by member credit.
+      const subscriptionRows = await tx`
+        select amount, paid_amount from fund_subscriptions
+         where id = ${current.subscription_id} for update`;
+      if (subscriptionRows.length) {
+        const subscription = subscriptionRows[0];
+        const newPaid = Math.max(0, round2(Number(subscription.paid_amount) - Number(current.amount)));
+        const status = newPaid <= 0
+          ? 'unpaid'
+          : newPaid >= Number(subscription.amount) ? 'paid' : 'partial';
+        await tx`update fund_subscriptions
+          set paid_amount = ${newPaid}, status = ${status}
+          where id = ${current.subscription_id}`;
+      }
     }
+
+    // Reverse any credit created by this receipt, including credit that was
+    // already applied to future dues. The applications must be reversed before
+    // the advance row because of the source_credit_id foreign key.
+    const advances = await tx`
+      select id from fund_member_credit_ledger
+       where receipt_id = ${id} and kind = 'advance'
+       for update`;
+    for (const advance of advances as any[]) {
+      const applications = await tx`
+        select l.id, l.subscription_id, l.amount,
+               s.amount as subscription_amount, s.paid_amount
+          from fund_member_credit_ledger l
+          join fund_subscriptions s on s.id = l.subscription_id
+         where l.kind = 'apply' and l.source_credit_id = ${advance.id}
+         for update of l, s`;
+      for (const application of applications as any[]) {
+        const newPaid = Math.max(0, round2(Number(application.paid_amount) + Number(application.amount)));
+        const status = newPaid <= 0
+          ? 'unpaid'
+          : newPaid >= Number(application.subscription_amount) ? 'paid' : 'partial';
+        await tx`update fund_subscriptions
+          set paid_amount = ${newPaid}, status = ${status}
+          where id = ${application.subscription_id}`;
+      }
+      await tx`delete from fund_member_credit_ledger
+        where kind = 'apply' and source_credit_id = ${advance.id}`;
+      await tx`delete from fund_member_credit_ledger where id = ${advance.id}`;
+    }
+    await tx`delete from fund_member_credit_ledger where receipt_id = ${id}`;
+
     await tx`delete from fund_receipts where id = ${id}`;
+    if (current.member_id) {
+      // Other credit may now be able to settle the dues this receipt released.
+      await applyMemberCreditsForMembers(tx, [current.member_id], user.id);
+    }
     await audit(tx, user, 'حذف سند قبض', 'receipt', id,
       `حذف السند REC-${String(current.receipt_no).padStart(4, '0')} — المبلغ ${current.amount} ر.ي`);
     return attachmentFiles;
@@ -3397,7 +3613,7 @@ app.get('/reports/member-movements', async (c) => {
       and due_month between ${from} and ${to}
     order by due_month asc`;
   const payments = await sql`select id, receipt_no, receipt_type, receipt_date, amount, payment_method,
-      notes, subscription_id,
+      notes, subscription_id, entry_currency, entry_amount, entry_rate,
       coalesce((
         select json_agg(json_build_object(
                  'due_month', s.due_month,
@@ -3408,10 +3624,33 @@ app.get('/reports/member-movements', async (c) => {
           from fund_receipt_allocations a
           join fund_subscriptions s on s.id = a.subscription_id
          where a.receipt_id = fund_receipts.id
-      ), '[]'::json) as allocations
+      ), '[]'::json) as allocations,
+      coalesce((
+        select sum(l.amount) from fund_member_credit_ledger l
+         where l.receipt_id = fund_receipts.id and l.kind = 'advance'
+      ), 0) as advance_credited
     from fund_receipts where member_id = ${memberId}
       and receipt_date between ${from} and ${to}
     order by receipt_date asc, receipt_no asc`;
+
+  // Credit applications are not cash movements, so they are reported separately
+  // rather than in the running balance. They explain why a due can be fully
+  // paid while its cash receipts are lower than its amount.
+  const creditApplications = await sql`
+    select l.id, l.amount, l.created_at,
+           l.subscription_id, l.source_credit_id,
+           s.due_month, s.hijri_year, s.hijri_month, s.amount as subscription_amount,
+           (select r.receipt_no from fund_member_credit_ledger a
+              join fund_receipts r on r.id = a.receipt_id
+             where a.id = l.source_credit_id limit 1) as source_receipt_no
+      from fund_member_credit_ledger l
+      left join fund_subscriptions s on s.id = l.subscription_id
+     where l.member_id = ${memberId} and l.kind = 'apply'
+     order by l.created_at asc, l.id asc`;
+  const creditBalanceRows = await sql`
+    select coalesce(sum(amount), 0) as balance
+      from fund_member_credit_ledger where member_id = ${memberId}`;
+  const creditBalance = round2(creditBalanceRows[0]?.balance ?? 0);
 
   const movements: any[] = [];
   for (const due of dues) {
@@ -3450,6 +3689,14 @@ app.get('/reports/member-movements', async (c) => {
       subscription_id: payment.subscription_id,
       months_covered: covered.length,
       covered_months: coveredMonths,
+      entry_currency: payment.entry_currency ?? null,
+      entry_amount: payment.entry_amount === null || payment.entry_amount === undefined
+        ? null
+        : round2(payment.entry_amount),
+      entry_rate: payment.entry_rate === null || payment.entry_rate === undefined
+        ? null
+        : Number(payment.entry_rate),
+      advance_credited: round2(payment.advance_credited ?? 0),
       status: 'paid',
     });
   }
@@ -3479,12 +3726,25 @@ app.get('/reports/member-movements', async (c) => {
     to,
     opening_balance: openingBalance,
     movements,
+    credit_balance: creditBalance,
+    credit_applications: creditApplications.map((row: any) => ({
+      id: row.id,
+      amount: round2(-Number(row.amount)),
+      created_at: row.created_at,
+      subscription_id: row.subscription_id,
+      source_credit_id: row.source_credit_id,
+      source_receipt_no: row.source_receipt_no,
+      label: row.hijri_year && row.hijri_month
+        ? hijriMonthLabel(hijriMonthKey(Number(row.hijri_year), Number(row.hijri_month)))
+        : row.due_month ? monthLabel(String(row.due_month).slice(0, 7)) : '',
+    })),
     totals: {
       dues: totalDues,
       paid: totalPaid,
       closing_balance: round2(openingBalance + totalDues - totalPaid),
       arrears: totalArrears,
       arrears_months: arrearsRows.length,
+      credit_balance: creditBalance,
     },
     arrears: arrearsRows.map((row: any) => ({
       ...row,
@@ -4212,6 +4472,8 @@ const RESTORE_ORDER = [
   'fund_subscription_exclusions',
   'fund_subscriptions',
   'fund_receipts',
+  'fund_receipt_allocations',
+  'fund_member_credit_ledger',
   'fund_expense_requests',
   'fund_expense_approvals',
   'fund_attachments',
@@ -4267,6 +4529,8 @@ async function restoreSnapshot(payload: any, user: any) {
     await tx`delete from public.fund_attachments`;
     await tx`delete from public.fund_reminder_logs`;
     await tx`delete from public.fund_expense_approvals`;
+    await tx`delete from public.fund_member_credit_ledger`;
+    await tx`delete from public.fund_receipt_allocations`;
     await tx`delete from public.fund_receipts`;
     await tx`delete from public.fund_subscriptions`;
     await tx`delete from public.fund_subscription_exclusions`;
@@ -4278,7 +4542,16 @@ async function restoreSnapshot(payload: any, user: any) {
 
     for (const table of RESTORE_ORDER) {
       const rows = sanitize(table, Array.isArray(payload.data[table]) ? payload.data[table] : []);
-      await insertRestoreRows(tx, table, rows);
+      if (table === 'fund_member_credit_ledger') {
+        // Advance rows must exist before the applications that point at them
+        // through source_credit_id.
+        const advances = rows.filter((row: any) => row.kind !== 'apply');
+        const applications = rows.filter((row: any) => row.kind === 'apply');
+        await insertRestoreRows(tx, table, advances);
+        await insertRestoreRows(tx, table, applications);
+      } else {
+        await insertRestoreRows(tx, table, rows);
+      }
       restored[table] = rows.length;
     }
     await audit(tx, user, 'استعادة نسخة احتياطية', 'backup', null,

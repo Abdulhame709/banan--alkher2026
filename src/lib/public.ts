@@ -1,4 +1,4 @@
-const FALLBACK_PUBLIC_URL = 'https://walid19-89.github.io/banan--alkher2026';
+const FALLBACK_PUBLIC_URL = 'https://banan-fund.netlify.app';
 
 export function publicAppUrl() {
   const configured = String(import.meta.env.VITE_PUBLIC_APP_URL ?? '').trim();
@@ -16,6 +16,11 @@ export function publicAppUrl() {
   // This keeps QR/verification links on GitHub Pages, the Worker, or any other
   // mirror without rebuilding for each domain.
   const path = window.location.pathname;
+  // Supabase Storage serves objects by exact filename and does not rewrite
+  // directory requests to index.html, so keep the file name in that case.
+  if (/\/index\.html$/i.test(path)) {
+    return `${window.location.origin}${path}`;
+  }
   const basePath = path.endsWith('/') ? path : path.replace(/\/[^/]*$/, '/');
   return `${window.location.origin}${basePath}`.replace(/\/+$/, '');
 }

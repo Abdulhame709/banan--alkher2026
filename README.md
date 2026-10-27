@@ -12,9 +12,10 @@ Excel، المرفقات المتعددة، التوقيع الإلكتروني 
 
 | الخدمة | الرابط |
 |---|---|
-| نسخة الويب (تعمل بدون VPN) | https://walid19-89.github.io/banan--alkher2026/ |
-| فحص الوصول المباشر | https://walid19-89.github.io/banan--alkher2026/ping.txt |
-| نسخة احتياطية (Cloudflare Worker — قد تُحجب) | https://banan-fund.pool-wave.workers.dev/ |
+| نسخة الويب (تعمل بدون VPN) | https://banan-fund.netlify.app/ |
+| فحص الوصول المباشر | https://banan-fund.netlify.app/ping.txt |
+| GitHub Pages (محجوب على YemenNet — سجل تاريخي) | https://walid19-89.github.io/banan--alkher2026/ |
+| نسخة احتياطية (Cloudflare Worker — محجوبة) | https://banan-fund.pool-wave.workers.dev/ |
 | فحص Supabase | https://vhyckuwhuhdyvhxyqdgt.supabase.co/functions/v1/api/health |
 | تطبيق الأندرويد (APK) | https://github.com/walid19-89/banan--alkher2026/releases |
 | الكود | https://github.com/walid19-89/banan--alkher2026 |
@@ -260,26 +261,44 @@ curl "https://vhyckuwhuhdyvhxyqdgt.supabase.co/functions/v1/api/health" `
 - Service Worker يحدّث نفسه تلقائياً. بعد نشر جديد، حدّث الصفحة مرة واحدة إن ظهرت
   نسخة قديمة.
 
-### الاستضافة الأساسية — GitHub Pages (تعمل بدون VPN)
+### الاستضافة الأساسية — Netlify (تعمل بدون VPN)
 
 الرابط المعتمد حالياً هو:
 
-**<https://walid19-89.github.io/banan--alkher2026/>**
+**<https://banan-fund.netlify.app/>**
 
-- تُنشر تلقائياً عبر `.github/workflows/deploy-pages.yml` عند كل دفع إلى `main`.
-- لا تحتاج أي سرّ إضافي؛ GitHub Pages يستخدم `GITHUB_TOKEN` المدمج.
+- موقع ثابت يُنشر من مجلد `dist`، والإعدادات في `netlify.toml`.
+- `public/_redirects` يعيد كل المسارات إلى `index.html` (التطبيق يستخدم
+  `HashRouter`).
+- للنشر من جهازك:
+
+  ```powershell
+  npm run build
+  node scripts/deploy-netlify.mjs
+  ```
+
+- للنشر التلقائي: اربط المستودع من Netlify وأضف متغيرات Vite
+  (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_API_BASE_URL`,
+  `VITE_EDGE_REGION`, `VITE_PUBLIC_APP_URL`).
 - للتحقق من وصول الشبكة: افتح
-  <https://walid19-89.github.io/banan--alkher2026/ping.txt> — يجب أن يظهر
-  `banan-fund-ok`.
+  <https://banan-fund.netlify.app/ping.txt> — يجب أن يظهر `banan-fund-ok`.
 - فحص Supabase من نفس الشبكة:
   <https://vhyckuwhuhdyvhxyqdgt.supabase.co/functions/v1/api/health> — يجب أن
   يظهر JSON فيه `"ok":true`.
 
-### Cloudflare Worker (نسخة احتياطية)
+> `APP_ORIGINS` في Edge Function يجب أن يشمل `https://banan-fund.netlify.app`.
+> راجع [`docs/التشغيل-الدائم.md`](docs/التشغيل-الدائم.md) للأوامر.
+
+### GitHub Pages (محجوب على YemenNet)
+
+الرابط <https://walid19-89.github.io/banan--alkher2026/> يبقى منشوراً
+ومحدّثاً عبر `.github/workflows/deploy-pages.yml`، لكنه **لا يفتح بدون VPN**
+على شبكة YemenNet، فلا تعطه للمستخدمين كرابط رئيسي.
+
+### Cloudflare Worker (نسخة احتياطية — محجوبة)
 
 الرابط `https://banan-fund.pool-wave.workers.dev/` ما زال منشوراً، لكنه **محجوب
-من شبكة YemenNet بدون VPN**، لذلك لا تعتمد عليه كرابط رئيسي. يبقى كنسخة
-احتياطية إن كان `github.io` محجوباً لدى مستخدم آخر.
+من شبكة YemenNet بدون VPN**، لذلك لا تعتمد عليه كرابط رئيسي.
 
 - يُنشر عبر `.github/workflows/deploy-worker.yml`.
 - يحتاج `CLOUDFLARE_API_TOKEN` و`CLOUDFLARE_ACCOUNT_ID` في GitHub.

@@ -132,6 +132,7 @@ export interface Member {
   arrears: number;
   open_months: number;
   due_months: number;
+  advance_balance: number;
 }
 
 export type SubscriptionStatus = 'unpaid' | 'partial' | 'paid';
@@ -152,6 +153,7 @@ export interface Subscription {
   phone?: string | null;
   active?: boolean;
   remaining?: number;
+  credit_applied?: number;
   receipts?: Receipt[];
 }
 
@@ -194,6 +196,18 @@ export interface Receipt {
   member_name?: string | null;
   member_no?: string | null;
   created_by_name?: string | null;
+  entry_currency?: string | null;
+  entry_amount?: number | null;
+  entry_rate?: number | null;
+  advance_credited?: number;
+  credit_applications?: Array<{
+    id: string;
+    amount: number;
+    subscription_id: string | null;
+    due_month: string | null;
+    hijri_year: number | null;
+    hijri_month: number | null;
+  }>;
 }
 
 export type ExpenseStatus = 'pending' | 'approved' | 'rejected' | 'paid';
@@ -290,6 +304,7 @@ export interface DashboardData {
     party: string;
     is_restricted: number;
   }>;
+  member_credits: number;
   members: { total: number; active: number; new_this_month: number };
   trend: Array<{ month: string; receipts: number; expenses: number }>;
 }

@@ -283,6 +283,16 @@ export function DashboardPage() {
           tone="amber"
           onClick={() => navigate('/reports?tab=arrears')}
         />
+        {Number(dashboard.member_credits) > 0 && (
+          <StatCard
+            label="أرصدة دائنة للأعضاء"
+            value={money(dashboard.member_credits)}
+            hint="دفعات مقدمة تُخصم تلقائياً من الأشهر القادمة"
+            icon={<Coins size={22} />}
+            tone="emerald"
+            onClick={() => navigate('/reports?tab=member')}
+          />
+        )}
         <StatCard
           label="طلبات الصرف المعلقة للاعتماد"
           value={formatNumber(pending.count)}

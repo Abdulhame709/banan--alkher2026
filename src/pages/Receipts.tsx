@@ -22,6 +22,7 @@ import {
   formatDate,
   formatNumber,
   money,
+  moneyIn,
   PAYMENT_METHOD_LABELS,
   RECEIPT_TYPE_LABELS,
   refReceipt,
@@ -53,7 +54,7 @@ import { ReceiptVoucher } from '../components/PrintSheet';
 import type { Attachment, Member, Receipt, Subscription, UploadedAttachment } from '../types';
 
 export function ReceiptsPage() {
-  const { capabilities } = useAuth();
+  const { capabilities, settings } = useAuth();
   const realtimeVersion = useRealtimeVersion();
   const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -82,6 +83,7 @@ export function ReceiptsPage() {
     member_id: '',
     donor_name: '',
     amount: '',
+    amount_currency: 'primary',
     payment_method: 'cash',
     is_restricted: false,
     restricted_purpose: '',
@@ -198,12 +200,25 @@ export function ReceiptsPage() {
     [receipts]
   );
 
+  const exchangeRate = Number(settings?.exchange_rate) || 0;
+  const secondaryEnabled = Boolean(settings?.secondary_enabled) && exchangeRate > 0;
+  const primaryCurrency = settings?.currency || 'ريال يمني';
+  const secondaryCurrency = settings?.secondary_currency || 'ريال سعودي';
+  const enteredAmount = parseAmount(form.amount);
+  const convertedAmount = form.amount_currency === 'secondary'
+    ? Math.round(enteredAmount * exchangeRate)
+    : enteredAmount;
+  const creditPreview = form.receipt_type === 'subscription' && memberArrears
+    ? Math.max(0, convertedAmount - memberArrears.total)
+    : 0;
+
   function openModal() {
     setForm({
       receipt_type: 'donation',
       member_id: '',
       donor_name: '',
       amount: '',
+      amount_currency: 'primary',
       payment_method: 'cash',
       is_restricted: false,
       restricted_purpose: '',
@@ -222,6 +237,14 @@ export function ReceiptsPage() {
     const value = parseAmount(form.amount);
     if (value <= 0) {
       setFormError('أدخل مبلغاً صحيحاً أكبر من صفر (بدون كسور)');
+      return;
+    }
+    if (form.amount_currency === 'secondary' && !secondaryEnabled) {
+      setFormError('العملة الثانية غير مفعلة أو سعر الصرف غير محدد. راجع الإعدادات.');
+      return;
+    }
+    if (form.amount_currency === 'secondary' && convertedAmount <= 0) {
+      setFormError('المبلغ المحول إلى العملة الأساسية أقل من الحد الأدنى');
       return;
     }
     if (form.receipt_type === 'subscription' && !form.member_id) {
@@ -243,6 +266,7 @@ export function ReceiptsPage() {
         member_id: form.member_id || null,
         donor_name: form.receipt_type === 'subscription' ? null : form.donor_name.trim() || null,
         amount: value,
+        amount_currency: form.amount_currency,
         payment_method: form.payment_method,
         is_restricted: form.receipt_type === 'subscription' ? false : form.is_restricted,
         restricted_purpose: form.receipt_type === 'subscription'
@@ -254,6 +278,11 @@ export function ReceiptsPage() {
         attachments: form.attachments,
       });
       toast.success(`تم إصدار سند القبض ${refReceipt(payload.receipt.receipt_no)} بنجاح`);
+      if (Number(payload.receipt.advance_credited) > 0) {
+        toast.info(
+          `تم قيد ${money(payload.receipt.advance_credited)} رصيداً دائناً للعضو لتسوية الأشهر القادمة تلقائياً`
+        );
+      }
       setOpen(false);
       setPrinting(payload.receipt);
       await load(false);
@@ -574,7 +603,23 @@ export function ReceiptsPage() {
                           : RECEIPT_TYPE_LABELS[receipt.receipt_type]}
                       </Badge>
                     </td>
-                    <td className="amount-cell"><DualAmount value={receipt.amount} /></td>
+                    <td className="amount-cell">
+                      <DualAmount value={receipt.amount} />
+                      {receipt.entry_currency
+                        && receipt.entry_currency !== primaryCurrency
+                        && receipt.entry_amount !== null
+                        && receipt.entry_amount !== undefined && (
+                          <small className="cell-sub">
+                            أُدخل: {moneyIn(receipt.entry_amount, receipt.entry_currency)}
+                            {' × '}{formatNumber(receipt.entry_rate ?? 0)}
+                          </small>
+                        )}
+                      {Number(receipt.advance_credited) > 0 && (
+                        <small className="cell-sub">
+                          منها رصيد دائن: {money(receipt.advance_credited)}
+                        </small>
+                      )}
+                    </td>
                     <td>
                       {receipt.is_restricted ? (
                         <span className="restricted-tag" title={receipt.restricted_purpose ?? ''}>
@@ -696,10 +741,10 @@ export function ReceiptsPage() {
                 </Field>
               )}
               <Field
-                label="المبلغ (ر.ي)"
+                label={`المبلغ (${form.amount_currency === 'secondary' ? secondaryCurrency : primaryCurrency})`}
                 required
                 hint={form.receipt_type === 'subscription'
-                  ? 'بدون حد أقصى — يوزع على أقدم الأشهر غير المسددة'
+                  ? 'بدون حد أقصى — يوزع على أقدم الأشهر غير المسددة ثم يُقيَّد الفائض رصيداً دائناً'
                   : 'أرقام صحيحة فقط — بدون كسور'}
               >
                 <AmountInput
@@ -707,6 +752,24 @@ export function ReceiptsPage() {
                   onChange={(value) => setForm((current) => ({ ...current, amount: value }))}
                   required
                 />
+              </Field>
+              <Field
+                label="عملة المبلغ"
+                hint={secondaryEnabled
+                  ? `سعر الصرف: 1 ${secondaryCurrency} = ${money(exchangeRate)}`
+                  : 'العملة الثانية غير مفعلة من الإعدادات'}
+              >
+                <Select
+                  value={form.amount_currency}
+                  onChange={(event) => setForm((current) => ({
+                    ...current,
+                    amount_currency: event.target.value,
+                  }))}
+                  disabled={!secondaryEnabled}
+                >
+                  <option value="primary">{primaryCurrency}</option>
+                  <option value="secondary">{secondaryCurrency}</option>
+                </Select>
               </Field>
               <Field label="طريقة الدفع" required>
                 <Select
@@ -719,6 +782,14 @@ export function ReceiptsPage() {
               </Field>
             </div>
 
+            {form.amount_currency === 'secondary' && enteredAmount > 0 && (
+              <Alert tone="info" title="تحويل العملة">
+                {moneyIn(enteredAmount, secondaryCurrency)} × {formatNumber(exchangeRate)} ={' '}
+                <strong>{money(convertedAmount)}</strong>
+                {' — '}يُحفظ القيد المحاسبي بالعملة الأساسية ({primaryCurrency}) ويظهر أصل المبلغ على السند.
+              </Alert>
+            )}
+
             {form.receipt_type === 'subscription' && form.member_id && (
               <Alert
                 tone={memberArrears && memberArrears.total > 0 ? 'info' : 'warning'}
@@ -728,7 +799,15 @@ export function ReceiptsPage() {
                   ? 'جارٍ حساب المتأخرات…'
                   : memberArrears && memberArrears.total > 0
                     ? `إجمالي المتأخرات ${money(memberArrears.total)} على ${formatNumber(memberArrears.months)} شهراً. سيتم توزيع المبلغ على الأقدم أولاً.`
-                    : 'لا توجد متأخرات مستحقة. أنشئ استحقاقات الأشهر أولاً من صفحة الاشتراكات.'}
+                    : 'لا توجد متأخرات مستحقة. يمكن تسجيل السداد الآن وسيُقيَّد المبلغ رصيداً دائناً يُستخدم في الأشهر القادمة.'}
+              </Alert>
+            )}
+
+            {creditPreview > 0 && (
+              <Alert tone="success" title="سداد بالزيادة — رصيد دائن">
+                المبلغ المدخل يتجاوز المتأخرات بـ <strong>{money(creditPreview)}</strong>. بعد تسوية
+                الأشهر السابقة سيُقيَّد هذا الفائض رصيداً دائناً للعضو، ويُخصم تلقائياً من استحقاقات
+                الأشهر القادمة عند إنشائها.
               </Alert>
             )}
 

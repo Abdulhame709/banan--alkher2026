@@ -22,6 +22,7 @@
     "native:assets": "node scripts/generate-native-assets.mjs",
     "apk:sync": "npm run build && npx cap sync android",
     "restore:backup": "node scripts/restore-backup.mjs",
+    "deploy:netlify": "node scripts/deploy-netlify.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
