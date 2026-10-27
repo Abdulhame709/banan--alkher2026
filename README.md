@@ -418,13 +418,13 @@ cd android
 أو اترك GitHub Actions يبني وينشر تلقائياً عند الدفع إلى `main`. يظهر الإصدار في
 **Releases** باسم `apk-1.0.<رقم التشغيل>`.
 
-> الإصدار `1.0.25` موقّع بنفس keystore السابق، لذلك يُثبّت فوق النسخة القديمة
+> الإصدار `1.0.26` موقّع بنفس keystore السابق، لذلك يُثبّت فوق النسخة القديمة
 > دون حذف البيانات. روابط QR داخله تشير إلى `https://banan-fund.netlify.app`
-> العامل بدون VPN.
+> العامل بدون VPN، ويضم الخزينة الثانية المستقلة والرصيد الدائن للعضو.
 > النسخ القديمة قد تشير إلى مشروع Supabase القديم أو إلى GitHub Pages المحجوب.
 >
-> - الرابط المباشر: <https://github.com/walid19-89/banan--alkher2026/releases/download/apk-1.0.25/banan-fund-1.0.25.apk>
-> - SHA-256: `1ba7dc94070a6bb1983cd6e8958a5d2d414a9764818600b9cc6a0e7d343cbbce`
+> - الرابط المباشر: <https://github.com/walid19-89/banan--alkher2026/releases/download/apk-1.0.26/banan-fund-1.0.26.apk>
+> - SHA-256: `c095758c536fd50bfc13b9ad79dd3fb521de7326685cebd420beb6676e59100d`
 
 > الطباعة تعمل بشكل أفضل في نسخة الويب. تصدير CSV في APK يستخدم قائمة المشاركة
 > (Filesystem + Share).
