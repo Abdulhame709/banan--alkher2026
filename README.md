@@ -5,8 +5,10 @@
 الاحتياطية. يدعم أيضًا تسجيل الدخول بالبريد أو الهاتف، الحذف الجماعي، استيراد سندات
 Excel، المرفقات المتعددة، التوقيع الإلكتروني والتحقق بـ QR، تذكيرات واتساب/SMS،
 التنبيهات الذكية، وتقارير PDF ومؤشرات سنوية. ويدعم سند **سداد اشتراكات عدة أشهر**
-(مبلغ واحد يوزَّع على أقدم المستحقات)، وعرض **عملة ثانية** (الريال السعودي) بسعر
-صرف يدوي من الإعدادات.
+(مبلغ واحد يوزَّع على أقدم المستحقات)، و**ترحيل السداد الزائد رصيداً دائناً**
+للعضو يُستخدم تلقائياً في الاستحقاقات القادمة، وإدخال مبلغ السند **بالريال
+السعودي** بسعر صرف يدوي من الإعدادات (مع حفظ المبلغ الأصلي والعملة وسعر الصرف
+في السند للتدقيق).
 
 **الروابط الحالية**
 
@@ -43,7 +45,8 @@ PostgreSQL (Supabase)  ──  RLS + triggers + realtime
 ```
 
 - **الواجهة:** React 19 + Vite + TypeScript + HashRouter.
-- **الاستضافة:** GitHub Pages (نسخة الويب) وGitHub Releases (APK).
+- **الاستضافة:** Netlify (نسخة الويب العامة، تعمل بدون VPN) وGitHub Releases (APK).
+  GitHub Pages يبقى منشوراً كسجل تاريخي لكنه محجوب على YemenNet.
 - **البيانات:** Supabase PostgreSQL مع RLS.
 - **المصادقة:** Supabase Auth (بريد أو رقم هاتف وكلمة مرور).
 - **الملفات:** Supabase Storage.
@@ -85,7 +88,15 @@ PostgreSQL (Supabase)  ──  RLS + triggers + realtime
 ```
 
 - المتأخرات على الأعضاء **لا** تُحسب رصيداً نقدياً.
-- سداد الاشتراك يكون **لكامل المتبقي من الشهر**؛ السداد الجزئي مرفوض، والسداد الزائد ممنوع.
+- سداد الاشتراك يكون **لكامل المتبقي من الشهر**؛ السداد الجزئي لشهر واحد مرفوض.
+- **السداد الزائد مقبول:** يُوزَّع المبلغ على أقدم المستحقات، وما يتبقى يُقيَّد
+  في `fund_member_credit_ledger` رصيداً دائناً للعضو، ويُستخدم تلقائياً
+  (`apply_member_credits()`) عند إنشاء استحقاقات لاحقة. المبلغ المحصَّل يبقى
+  داخل الرصيد النقدي، والرصيد الدائن التزام بتغطية استحقاقات قادمة وليس رصيداً
+  نقدياً إضافياً.
+- **عملة الإدخال:** يمكن إدخال المبلغ بالعملة الثانية (الريال السعودي) بسعر
+  الصرف في الإعدادات. القيد المحاسبي يبقى بالعملة الأساسية، ويُحفظ
+  `entry_currency` و`entry_amount` و`entry_rate` في السند للتدقيق والطباعة.
 - المبالغ أعداد صحيحة فقط، وتُعرض بفواصل الآلاف مثل `1,000` وليس `1000.01`.
 - ترقيم السندات تسلسلي: `REC-0001`، `PV-0001`.
 - كل عملية مالية تُسجّل في `fund_audit_logs`، والسجل غير قابل للتعديل أو الحذف.
@@ -215,7 +226,7 @@ npx supabase functions deploy api `
 supabase secrets set CRON_SECRET="<cron-secret>" `
   --project-ref vhyckuwhuhdyvhxyqdgt
 
-supabase secrets set APP_ORIGINS="https://walid19-89.github.io,https://abdulhame709.github.io,http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173,http://127.0.0.1:4173,https://localhost,capacitor://localhost" `
+supabase secrets set APP_ORIGINS="https://banan-fund.netlify.app,https://walid19-89.github.io,https://abdulhame709.github.io,http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173,http://127.0.0.1:4173,https://localhost,capacitor://localhost" `
   --project-ref vhyckuwhuhdyvhxyqdgt
 
 # اختياري: القيمة الافتراضية هي ap-northeast-2
@@ -232,7 +243,15 @@ curl "https://vhyckuwhuhdyvhxyqdgt.supabase.co/functions/v1/api/health" `
 
 ---
 
-## 7. نسخة الويب على GitHub Pages
+## 7. نسخة الويب والنشر
+
+### الرابط العام المعتمد: Netlify (يعمل بدون VPN)
+
+1. `npm run build` (مع `VITE_PUBLIC_APP_URL=https://banan-fund.netlify.app`).
+2. `node scripts/deploy-netlify.mjs` — يرفع `dist` عبر واجهة Netlify.
+3. الرابط: `https://banan-fund.netlify.app/`.
+
+### GitHub Pages (سجل تاريخي — محجوب على YemenNet)
 
 1. اذهب إلى **Settings → Pages** في المستودع.
 2. اختر **Source: GitHub Actions**.
@@ -359,19 +378,20 @@ npm run build
 npx cap sync android
 cd android
 ./gradlew assembleRelease `
-  -PbananVersionCode=23 `
-  -PbananVersionName=1.0.23
+  -PbananVersionCode=25 `
+  -PbananVersionName=1.0.25
 ```
 
 أو اترك GitHub Actions يبني وينشر تلقائياً عند الدفع إلى `main`. يظهر الإصدار في
 **Releases** باسم `apk-1.0.<رقم التشغيل>`.
 
-> الإصدار `1.0.23` موقّع بنفس keystore السابق، لذلك يُثبّت فوق النسخة القديمة
-> دون حذف البيانات. روابط QR داخله تشير إلى GitHub Pages العامل بدون VPN.
-> النسخ القديمة قد تشير إلى مشروع Supabase القديم أو إلى Worker المحجوب.
+> الإصدار `1.0.24` موقّع بنفس keystore السابق، لذلك يُثبّت فوق النسخة القديمة
+> دون حذف البيانات. روابط QR داخله تشير إلى `https://banan-fund.netlify.app`
+> العامل بدون VPN.
+> النسخ القديمة قد تشير إلى مشروع Supabase القديم أو إلى GitHub Pages المحجوب.
 >
-> - الرابط المباشر: <https://github.com/walid19-89/banan--alkher2026/releases/download/apk-1.0.23/banan-fund-1.0.23.apk>
-> - SHA-256: `41cdaa180aa4326e23a38cd05de42d87c4cbf53cec58065fea9b9f56c266b4ee`
+> - الرابط المباشر: <https://github.com/walid19-89/banan--alkher2026/releases/download/apk-1.0.24/banan-fund-1.0.24.apk>
+> - SHA-256: `f10da68f16dd8a697ad152c2e4190f126bce5527c51879db6fbf2535b1d15516`
 
 > الطباعة تعمل بشكل أفضل في نسخة الويب. تصدير CSV في APK يستخدم قائمة المشاركة
 > (Filesystem + Share).
@@ -548,7 +568,7 @@ docs/الإنتاج.md
 | فشل رفع ملف | تحقق من الحجم والنوع، ومن تسجيل الدخول |
 | فشل بناء APK | راجع سجل GitHub Actions؛ تأكد من أسرار keystore وAndroid SDK 36 |
 | فشل نشر Pages | تأكد أن الدفع إلى `main` وأن Pages Source = GitHub Actions |
-| الموقع/التطبيق لا يفتح إلا مع VPN | اختبر `github.io` و`supabase.co` منفصلين، ثم انقل الويب إلى Cloudflare Pages/Netlify أو استخدم نطاقاً مخصصاً. راجع `docs/التشغيل-الدائم.md` |
+| الموقع/التطبيق لا يفتح إلا مع VPN | `github.io` و`*.workers.dev` و`*.pages.dev` محجوبة على YemenNet، و`supabase.co` و`netlify.app` تعملان. استخدم `https://banan-fund.netlify.app/`. راجع `docs/التشغيل-الدائم.md` |
 | توقف Supabase بعد أسبوع | أضف مراقباً خارجياً كل 5 دقائق أو استخدم خطة Pro |
 
 ---
@@ -557,14 +577,14 @@ docs/الإنتاج.md
 
 - Supabase Free: قاعدة بيانات وAuth وStorage وRealtime وEdge Functions ضمن حدود
   الاستخدام المجاني.
-- GitHub Pages مجاني للمستودعات العامة.
+- GitHub Pages مجاني للمستودعات العامة، وNetlify مجاني للأغراض الشخصية.
 - GitHub Actions مجاني ضمن دقائق الحساب.
 - لا حاجة لخادم شخصي يعمل دائماً.
 - راقب حدود Supabase (حجم القاعدة، التخزين، طلبات Edge Function) من لوحة المشروع.
 - الخطة المجانية قد تُوقف المشروع بعد 7 أيام بلا نشاط؛ استخدم المراقب الخارجي
   أو خطة Pro. راجع `docs/التشغيل-الدائم.md`.
-- إذا كان `github.io` محجوباً في شبكتك، استخدم Cloudflare Pages أو Netlify أو
-  نطاقاً مخصصاً؛ لا تعتمد على VPN للتشغيل الدائم.
+- إذا كان `github.io` محجوباً في شبكتك، استخدم Netlify (المعتمد) أو Vercel أو
+  Firebase Hosting أو نطاقاً مخصصاً؛ لا تعتمد على VPN للتشغيل الدائم.
 
 ---
 

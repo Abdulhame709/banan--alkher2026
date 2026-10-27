@@ -110,28 +110,31 @@ async function main() {
   let deploy = await api('POST', `/sites/${site.id}/deploys`, JSON.stringify({ files: manifest }));
   console.log(`deploy: ${deploy.id}`);
 
-  // Netlify reports required uploads without a leading slash, but the manifest
-  // keys must include one. Normalise both sides before comparing.
-  const required = new Set(
-    Array.isArray(deploy.required)
-      ? deploy.required.map((entry) => String(entry).replace(/^\/+/, ''))
-      : files.map((file) => file.rel)
-  );
-  console.log(`files: ${files.length} total, ${required.size} to upload`);
+  // `required` contains the SHA-1 digests of blobs Netlify does not have yet,
+  // and files are uploaded by digest, not by path. Several paths may share a
+  // digest, so build a digest -> bytes map and upload each digest once.
+  const bySha = new Map();
+  for (const file of files) {
+    if (!bySha.has(file.sha1)) bySha.set(file.sha1, file);
+  }
+  const required = Array.isArray(deploy.required) && deploy.required.length
+    ? deploy.required.map((entry) => String(entry))
+    : [...bySha.keys()];
+  const uploads = required.filter((sha) => bySha.has(sha));
+  console.log(`files: ${files.length} total, ${uploads.length} blobs to upload`);
 
   let uploaded = 0;
-  for (const file of files) {
-    if (!required.has(file.rel)) continue;
+  for (const sha of uploads) {
     await api(
       'PUT',
-      `/deploys/${deploy.id}/files/${file.rel.split('/').map(encodeURIComponent).join('/')}`,
-      file.bytes,
+      `/deploys/${deploy.id}/files/${encodeURIComponent(sha)}`,
+      bySha.get(sha).bytes,
       'application/octet-stream'
     );
     uploaded += 1;
-    if (uploaded % 10 === 0) process.stdout.write(`  ${uploaded}/${required.size}\r`);
+    if (uploaded % 10 === 0) process.stdout.write(`  ${uploaded}/${uploads.length}\r`);
   }
-  console.log(`  uploaded ${uploaded}/${required.size}`);
+  console.log(`  uploaded ${uploaded}/${uploads.length}`);
 
   for (let attempt = 0; attempt < 100; attempt += 1) {
     deploy = await api('GET', `/deploys/${deploy.id}`);
