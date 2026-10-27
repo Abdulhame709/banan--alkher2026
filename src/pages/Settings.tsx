@@ -4,6 +4,7 @@ import {
   Coins,
   ImagePlus,
   Info,
+  Landmark,
   RefreshCw,
   Save,
   ShieldCheck,
@@ -47,6 +48,8 @@ export function SettingsPage() {
     secondary_currency: 'ريال سعودي',
     exchange_rate: '0',
     secondary_enabled: false,
+    secondary_box_enabled: true,
+    secondary_opening_balance: '0',
     opening_balance: '0',
     allow_signups: true,
     auto_dues_enabled: true,
@@ -70,6 +73,8 @@ export function SettingsPage() {
         secondary_currency: payload.settings.secondary_currency ?? 'ريال سعودي',
         exchange_rate: String(payload.settings.exchange_rate ?? 0),
         secondary_enabled: Boolean(payload.settings.secondary_enabled),
+        secondary_box_enabled: payload.settings.secondary_box_enabled !== false,
+        secondary_opening_balance: String(payload.settings.secondary_opening_balance ?? 0),
         opening_balance: String(payload.settings.opening_balance),
         allow_signups: Boolean(payload.settings.allow_signups),
         auto_dues_enabled: payload.settings.auto_dues_enabled !== false,
@@ -107,6 +112,8 @@ export function SettingsPage() {
         secondary_currency: form.secondary_currency.trim() || 'ريال سعودي',
         exchange_rate: Number(form.exchange_rate) || 0,
         secondary_enabled: form.secondary_enabled,
+        secondary_box_enabled: form.secondary_box_enabled,
+        secondary_opening_balance: parseAmount(form.secondary_opening_balance),
         opening_balance: parseAmount(form.opening_balance),
         allow_signups: form.allow_signups,
         auto_dues_enabled: form.auto_dues_enabled,
@@ -289,6 +296,60 @@ export function SettingsPage() {
               وإدخال المبلغ بالعملة الثانية، فيُحوَّل فوراً إلى العملة الأساسية بسعر الصرف المحفوظ
               وقت الإدخال ويبقى السند محتفظاً بأصل المبلغ وسعره. حدّثه عند تغير السوق ووثّق التغيير
               في سجل التدقيق.
+            </Alert>
+          </Card>
+
+          <Card>
+            <CardHeader
+              title="الخزينة الثانية (الريال السعودي)"
+              subtitle="خزينة نقدية مستقلة تماماً — لا تُضاف إلى إجمالي أرصدة الصندوق الرئيسي"
+              icon={<Landmark size={19} />}
+            />
+            <div className="settings-switches">
+              <label className="setting-row">
+                <div>
+                  <strong>تفعيل الخزينة الثانية</strong>
+                  <span>
+                    عند التفعيل تظهر صفحة مستقلة لخزينة {form.secondary_currency || 'الريال السعودي'} في القائمة
+                    ولوحة التحكم. رصيدها وتقاريرها منفصلة، ولا يدخل في إجمالي الصندوق الرئيسي.
+                  </span>
+                </div>
+                <span className="switch-field">
+                  <input
+                    type="checkbox"
+                    checked={form.secondary_box_enabled}
+                    onChange={(event) => setForm((current) => ({ ...current, secondary_box_enabled: event.target.checked }))}
+                  />
+                  <span className="switch" />
+                </span>
+              </label>
+            </div>
+            <div className="form-grid two">
+              <Field
+                label={`الرصيد الافتتاحي للخزينة الثانية (${form.secondary_currency || 'ريال سعودي'})`}
+                hint="أرقام صحيحة فقط — الرصيد الموجود في الخزينة قبل بدء تسجيل التحويلات"
+              >
+                <AmountInput
+                  value={form.secondary_opening_balance}
+                  onChange={(value) => setForm((current) => ({ ...current, secondary_opening_balance: value }))}
+                />
+              </Field>
+              <div className="financial-preview">
+                <span>المقابل التقريبي بالعملة الأساسية (للعرض فقط)</span>
+                <strong>
+                  {moneyIn(
+                    Number(form.secondary_opening_balance || 0) * (Number(form.exchange_rate) || 0),
+                    form.currency || 'ريال يمني'
+                  )}
+                </strong>
+                <small>لا يُضاف هذا المقابل إلى رصيد الصندوق الرئيسي</small>
+              </div>
+            </div>
+            <Alert tone="info">
+              التحويل بين الصندوقين يسجل حركة واحدة: عند التحويل إلى الخزينة الثانية ينخفض الرصيد النقدي
+              للصندوق الرئيسي بمبلغ التحويل، وعند التحويل منها يعود المبلغ إلى الصندوق الرئيسي. رصيد الخزينة
+              الثانية يبقى بعملته ({form.secondary_currency || 'ريال سعودي'}) ولا يظهر ضمن إجمالي الصندوق
+              الرئيسي في أي تقرير موحد. كل تحويل وكل تعديل للرصيد الافتتاحي يُسجل في سجل التدقيق.
             </Alert>
           </Card>
 

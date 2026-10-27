@@ -8,7 +8,9 @@ Excel، المرفقات المتعددة، التوقيع الإلكتروني 
 (مبلغ واحد يوزَّع على أقدم المستحقات)، و**ترحيل السداد الزائد رصيداً دائناً**
 للعضو يُستخدم تلقائياً في الاستحقاقات القادمة، وإدخال مبلغ السند **بالريال
 السعودي** بسعر صرف يدوي من الإعدادات (مع حفظ المبلغ الأصلي والعملة وسعر الصرف
-في السند للتدقيق).
+في السند للتدقيق). كما يضم **خزينة ثانية مستقلة بالريال السعودي** تُموَّل بالتحويل
+من الصندوق الرئيسي وإليه فقط، برصيد وكشف وطباعة منفصلة لا تدخل في إجمالي الصندوق
+الرئيسي.
 
 **الروابط الحالية**
 
@@ -60,13 +62,18 @@ PostgreSQL (Supabase)  ──  RLS + triggers + realtime
 
 | الدور | الصلاحيات |
 |---|---|
-| `admin` | كل شيء: الإعدادات، المستخدمون، الصلاحيات، النسخ الاحتياطي، الاعتماد، الصرف، التقارير |
-| `secretary_general` | الاعتماد الأول لطلبات الصرف، الاطلاع على التقارير والبيانات |
-| `fund_manager` | الاعتماد الثاني لطلبات الصرف، الإشراف على أعمال الصندوق |
-| `accountant` | الأعضاء، الاستحقاقات، السندات، إنشاء طلبات الصرف، التقارير |
-| `treasurer` | تحصيل الأموال، السندات، صرف المبالغ المعتمدة، التقارير |
-| `board_member` | الاطلاع والمراجعة والاعتماد حسب الصلاحية |
+| `admin` | كل شيء: الإعدادات، المستخدمون، الصلاحيات، النسخ الاحتياطي، الاعتماد، الصرف، التقارير، الخزينة الثانية |
+| `secretary_general` | الاعتماد الأول لطلبات الصرف، الاطلاع على التقارير والبيانات والخزينة الثانية |
+| `fund_manager` | الاعتماد الثاني لطلبات الصرف، الإشراف على أعمال الصندوق، الاطلاع على الخزينة الثانية |
+| `accountant` | الأعضاء، الاستحقاقات، السندات، إنشاء طلبات الصرف، التقارير، عرض الخزينة الثانية |
+| `treasurer` | تحصيل الأموال، السندات، صرف المبالغ المعتمدة، التقارير، إدارة الخزينة الثانية (تسجيل وحذف التحويلات) |
+| `board_member` | الاطلاع والمراجعة والاعتماد حسب الصلاحية، عرض الخزينة الثانية |
 | `member` | بوابة العضو: استحقاقاته وسنداته وكشف حسابه |
+
+مفتاحا الصلاحية الخاصان بالخزينة الثانية:
+
+- `secondary_box.view` — عرض رصيد الخزينة الثانية وكشف حركاتها (افتراضياً لكل الأدوار الإدارية).
+- `secondary_box.manage` — تسجيل التحويلات وحذفها (مدير النظام وأمين الصندوق افتراضياً).
 
 قواعد الاعتماد:
 
@@ -98,8 +105,27 @@ PostgreSQL (Supabase)  ──  RLS + triggers + realtime
   الصرف في الإعدادات. القيد المحاسبي يبقى بالعملة الأساسية، ويُحفظ
   `entry_currency` و`entry_amount` و`entry_rate` في السند للتدقيق والطباعة.
 - المبالغ أعداد صحيحة فقط، وتُعرض بفواصل الآلاف مثل `1,000` وليس `1000.01`.
-- ترقيم السندات تسلسلي: `REC-0001`، `PV-0001`.
+- ترقيم السندات تسلسلي: `REC-0001`، `PV-0001`، والتحويلات بين الصندوقين `TRF-0001`.
 - كل عملية مالية تُسجّل في `fund_audit_logs`، والسجل غير قابل للتعديل أو الحذف.
+
+### الخزينة الثانية (خزينة مستقلة بالريال السعودي)
+
+```
+رصيد الخزينة الثانية = الرصيد الافتتاحي للخزينة + تحويلات إليها − تحويلات منها
+الرصيد النقدي للصندوق الرئيسي = الافتتاحي + المقبوضات − المصروفات ± صافي التحويلات
+```
+
+- الخزينة الثانية **حساب منفصل تماماً**: رصيدها بعملتها (الريال السعودي افتراضياً) ولا
+  يُضاف إلى إجمالي الصندوق الرئيسي ولا إلى أي تقرير موحد. لها صفحة وكشف وطباعة مستقلة.
+- العمليات الوحيدة عليها هي **التحويل بين الصندوقين**:
+  - `to_secondary`: يخرج مبلغ من الصندوق الرئيسي بالريال اليمني ويدخل مقابلُه إلى الخزينة بالريال السعودي.
+  - `to_primary`: يخرج مبلغ من الخزينة بالريال السعودي ويدخل مقابلُه إلى الصندوق الرئيسي.
+- التحويل يُدخل بعملة **المصدر**، ويحسب الخادم الطرف الآخر من سعر الصرف ويحفظ
+  `amount_primary` و`amount_secondary` و`rate` معاً، فلا يتأثر التحويل بتغيّر السعر لاحقاً.
+- لا يُسمح بتحويل يتجاوز رصيد المصدر، ولا بحذف تحويل يجعل رصيد أي صندوق سالباً.
+- الرصيد الافتتاحي للخزينة الثانية يُضبط من الإعدادات، وكل تعديل أو تحويل أو حذف يُسجَّل
+  في سجل التدقيق.
+- النسخ الاحتياطي والاستعادة يشملان جدول `fund_cash_transfers`.
 
 ### مزايا تشغيلية مضافة
 
@@ -122,6 +148,8 @@ PostgreSQL (Supabase)  ──  RLS + triggers + realtime
   الاعتماد.
 - **مؤشرات سنوية:** مقارنة الإيرادات والمصروفات والنمو شهرياً.
 - **PDF عربي:** تنزيل السند/التقرير كـ PDF من نسخة الويب، مع ترويسة وتوقيع.
+- **الخزينة الثانية:** خزينة نقدية مستقلة (ريال سعودي) تُموَّل بالتحويل من الصندوق
+  الرئيسي وإليه فقط، برصيد وكشف وطباعة منفصلة، وبصلاحيتي عرض وإدارة مستقلتين.
 
 ---
 
@@ -179,6 +207,10 @@ npm run apk:sync      # build + npx cap sync android
 | `0007_keepalive.sql` | جدول `fund_keepalive` ودالة `ping_keepalive()` |
 | `0008_phone_normalization.sql` | توحيد صيغ الهاتف اليمني بين الواجهة وقاعدة البيانات |
 | `0009_dashboard_rpc.sql` | دالة `fund_dashboard_payload()`: توليد الاستحقاق وجلب لوحة التحكم في استدعاء واحد |
+| `0010_receipt_allocations.sql` | توزيع سند الاشتراك على عدة أشهر (`fund_receipt_allocations`) |
+| `0011_secondary_currency.sql` | العملة الثانية وسعر الصرف اليدوي (`secondary_currency`, `exchange_rate`, `secondary_enabled`) |
+| `0012_member_credit_and_receipt_currency.sql` | الرصيد الدائن للعضو وتطبيقه التلقائي على أقدم المستحقات، وعملة إدخال السند |
+| `0013_secondary_cash_box.sql` | الخزينة الثانية المستقلة، جدول `fund_cash_transfers`، وتسلسل `cash_transfer` |
 
 تطبيق الترحيلات عبر Supabase CLI:
 
@@ -197,8 +229,9 @@ $env:SUPABASE_ACCESS_TOKEN = "<management-api-token>"
 ### الجداول الأساسية
 
 `fund_settings`، `fund_user_profiles`، `fund_members`، `fund_subscriptions`،
-`fund_subscription_exclusions`، `fund_receipts`، `fund_expense_requests`،
-`fund_expense_approvals`، `fund_attachments`، `fund_reminder_logs`،
+`fund_subscription_exclusions`، `fund_receipts`، `fund_receipt_allocations`،
+`fund_member_credit_ledger`، `fund_expense_requests`، `fund_expense_approvals`،
+`fund_cash_transfers`، `fund_attachments`، `fund_reminder_logs`،
 `fund_audit_logs`، `fund_notifications`، `fund_events`، `fund_backups`،
 `fund_device_tokens`، `fund_keepalive`، `sequences`.
 
@@ -514,17 +547,19 @@ node scripts/seed-supabase.mjs
 src/
   components/      الواجهات المشتركة (Layout, MultiFileUpload, SignaturePad, PrintSheet, ...)
   lib/             api, auth, supabase, realtime, toast, format, pdf, public
-  pages/           Dashboard, Members, Subscriptions, Receipts, Expenses, Reports, Users, Audit, Settings, Verify
+  pages/           Dashboard, Members, Subscriptions, Receipts, Expenses, Reports,
+                   SecondaryBox, Users, Audit, Settings, Verify
   types.ts
 supabase/
   functions/api/index.ts     Edge Function (Hono)
-  migrations/                0001 … 0008
+  migrations/                0001 … 0013
 scripts/
   seed-supabase.mjs          بذر بيانات تجريبية (اختياري للتطوير)
   restore-backup.mjs         استعادة متقدمة للمسؤول التقني
   backfill-hijri.mjs         تعبئة حقول التاريخ الهجري
   generate-icons.mjs         أيقونات PWA
   generate-native-assets.mjs أيقونات/شاشات Capacitor
+  deploy-netlify.mjs         نشر الويب على Netlify عبر الـ API
 android/                     مشروع Capacitor Android
 .github/workflows/           deploy-pages.yml + build-apk.yml + keep-alive.yml
                              + uptime.yml + daily-backup.yml

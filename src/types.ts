@@ -58,6 +58,8 @@ export interface Capabilities {
   printExpenses: boolean;
   exportReports: boolean;
   printReports: boolean;
+  viewSecondaryBox: boolean;
+  manageSecondaryBox: boolean;
   manageUsers: boolean;
   manageSettings: boolean;
   manageBackups: boolean;
@@ -82,6 +84,8 @@ export interface FundSettings extends PublicSettings {
   id: string;
   logo_file: string | null;
   opening_balance: number;
+  secondary_box_enabled: boolean;
+  secondary_opening_balance: number;
   allow_self_approval_demo: boolean;
   auto_dues_enabled: boolean;
   cash_alert_threshold: number;
@@ -274,6 +278,9 @@ export interface DashboardData {
     opening_balance: number;
     total_receipts: number;
     total_paid_expenses: number;
+    transfers_in: number;
+    transfers_out: number;
+    transfers_net: number;
     cash_balance: number;
     committed_pending: number;
     net_available: number;
@@ -305,6 +312,17 @@ export interface DashboardData {
     is_restricted: number;
   }>;
   member_credits: number;
+  secondary_box: {
+    enabled: boolean;
+    currency: string;
+    exchange_rate: number;
+    opening_balance: number;
+    total_in: number;
+    total_out: number;
+    net_movements: number;
+    transfer_count: number;
+    balance: number;
+  } | null;
   members: { total: number; active: number; new_this_month: number };
   trend: Array<{ month: string; receipts: number; expenses: number }>;
 }
@@ -350,7 +368,8 @@ export interface CashLedger {
   total_out: number;
   movements: Array<{
     id: string;
-    kind: 'receipt' | 'expense';
+    kind: 'receipt' | 'expense' | 'transfer';
+    direction?: 'to_secondary' | 'to_primary';
     date: string;
     reference: string;
     description: string;
@@ -358,8 +377,44 @@ export interface CashLedger {
     debit: number;
     credit: number;
     balance: number;
+    amount_secondary?: number;
+    rate?: number;
+    notes?: string | null;
     created_at: string;
   }>;
+}
+
+export interface SecondaryBoxTransfer {
+  id: string;
+  transfer_no: number;
+  reference: string;
+  direction: 'to_secondary' | 'to_primary';
+  date: string;
+  amount_primary: number;
+  amount_secondary: number;
+  rate: number;
+  notes: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  balance_after: number;
+}
+
+export interface SecondaryBoxData {
+  enabled: boolean;
+  currency: string;
+  primary_currency: string;
+  exchange_rate: number;
+  from: string;
+  to: string;
+  opening_balance: number;
+  period_opening_balance: number;
+  balance: number;
+  total_in: number;
+  total_out: number;
+  net_movements: number;
+  transfer_count: number;
+  primary_equivalent: number;
+  movements: SecondaryBoxTransfer[];
 }
 
 export interface AnnualReport {

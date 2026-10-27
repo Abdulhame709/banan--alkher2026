@@ -31,6 +31,7 @@ import {
   formatDate,
   formatNumber,
   money,
+  moneyIn,
   monthLabel,
   refExpense,
   refReceipt,
@@ -250,7 +251,7 @@ export function DashboardPage() {
         <StatCard
           label="الرصيد النقدي الفعلي"
           value={<DualAmount value={position.cash_balance} />}
-          hint="افتتاحي + مقبوضات − مصروفات مدفوعة"
+          hint="افتتاحي + مقبوضات − مصروفات مدفوعة ± تحويلات الخزينة الثانية"
           icon={<Wallet size={22} />}
           tone="emerald"
         />
@@ -302,6 +303,47 @@ export function DashboardPage() {
           onClick={() => navigate('/expenses?status=pending')}
         />
       </section>
+
+      {dashboard.secondary_box && dashboard.secondary_box.enabled && (
+        <Card className="secondary-box-card">
+          <CardHeader
+            title={`الخزينة الثانية (${dashboard.secondary_box.currency})`}
+            subtitle="خزينة مستقلة تماماً — رصيدها لا يُضاف إلى إجمالي الصندوق الرئيسي"
+            icon={<Landmark size={19} />}
+            action={
+              <Link to="/secondary-box" className="btn btn-secondary btn-sm">
+                إدارة الخزينة <ArrowLeft size={15} />
+              </Link>
+            }
+          />
+          <div className="report-head-metrics secondary-box-metrics">
+            <div>
+              <span>رصيد الخزينة</span>
+              <strong>{moneyIn(dashboard.secondary_box.balance, dashboard.secondary_box.currency)}</strong>
+            </div>
+            <div>
+              <span>إجمالي الوارد</span>
+              <strong className="text-emerald">
+                {moneyIn(dashboard.secondary_box.total_in, dashboard.secondary_box.currency)}
+              </strong>
+            </div>
+            <div>
+              <span>إجمالي الصادر</span>
+              <strong className="text-gold">
+                {moneyIn(dashboard.secondary_box.total_out, dashboard.secondary_box.currency)}
+              </strong>
+            </div>
+            <div>
+              <span>الرصيد الافتتاحي</span>
+              <strong>{moneyIn(dashboard.secondary_box.opening_balance, dashboard.secondary_box.currency)}</strong>
+            </div>
+            <div>
+              <span>القيمة التقريبية</span>
+              <strong>{money(dashboard.secondary_box.balance * (dashboard.secondary_box.exchange_rate || 0))}</strong>
+            </div>
+          </div>
+        </Card>
+      )}
 
       <section className="quick-actions-card">
         <CardHeader title="إجراءات سريعة" subtitle="العمليات اليومية الأكثر استخداماً في الصندوق" />

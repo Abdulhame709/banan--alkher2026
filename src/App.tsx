@@ -13,6 +13,7 @@ import { SubscriptionsPage } from './pages/Subscriptions';
 import { ReceiptsPage } from './pages/Receipts';
 import { ExpensesPage } from './pages/Expenses';
 import { ReportsPage } from './pages/Reports';
+import { SecondaryBoxPage } from './pages/SecondaryBox';
 import { UsersPage } from './pages/Users';
 import { SettingsPage } from './pages/Settings';
 import { AuditPage } from './pages/Audit';
@@ -53,6 +54,7 @@ function HomeRoute() {
     capabilities.viewReceipts && '/receipts',
     capabilities.viewExpenses && '/expenses',
     capabilities.viewReports && '/reports',
+    capabilities.viewSecondaryBox && '/secondary-box',
     capabilities.manageUsers && '/users',
     capabilities.manageSettings && '/settings',
     capabilities.viewAudit && '/audit',
@@ -151,6 +153,14 @@ export default function App() {
           element={
             <Guard allow={(capabilities) => capabilities.viewReports}>
               <ReportsPage />
+            </Guard>
+          }
+        />
+        <Route
+          path="secondary-box"
+          element={
+            <Guard allow={(capabilities) => capabilities.viewSecondaryBox}>
+              <SecondaryBoxPage />
             </Guard>
           }
         />

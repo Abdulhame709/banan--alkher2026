@@ -98,6 +98,13 @@ const PERMISSION_GROUPS: Array<{ title: string; items: Array<[string, string]> }
     ],
   },
   {
+    title: 'الخزينة الثانية',
+    items: [
+      ['secondary_box.view', 'عرض الخزينة الثانية'],
+      ['secondary_box.manage', 'تسجيل وحذف التحويلات'],
+    ],
+  },
+  {
     title: 'التقارير والتدقيق',
     items: [
       ['reports.view', 'عرض التقارير'],

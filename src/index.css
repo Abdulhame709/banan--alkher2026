@@ -2912,6 +2912,19 @@ code {
   flex-wrap: wrap;
 }
 .reports-range-label { font-size: 0.68rem; color: var(--slate-400); }
+
+/* Independent second cash box (Saudi Riyal) */
+.secondary-box-card {
+  border-color: #fde68a;
+  background: linear-gradient(120deg, #fffdf5, #fffbeb);
+}
+.secondary-box-metrics { gap: 26px; }
+.secondary-box-metrics strong { font-size: 0.95rem; }
+.secondary-box-card .card-header-action .btn { white-space: nowrap; }
+@media (max-width: 640px) {
+  .secondary-box-metrics { gap: 16px; }
+  .secondary-box-metrics > div { min-width: 42%; }
+}
 .report-head {
   display: flex;
   align-items: flex-start;

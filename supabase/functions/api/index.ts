@@ -33,6 +33,7 @@ const BACKUP_TABLES = [
   'fund_receipts',
   'fund_receipt_allocations',
   'fund_member_credit_ledger',
+  'fund_cash_transfers',
   'fund_expense_requests',
   'fund_expense_approvals',
   'fund_attachments',
@@ -124,6 +125,7 @@ const PERMISSION_KEYS = [
   'receipts.view', 'receipts.add', 'receipts.edit', 'receipts.delete', 'receipts.print',
   'expenses.view', 'expenses.add', 'expenses.edit', 'expenses.delete', 'expenses.approve', 'expenses.pay', 'expenses.print',
   'reports.view', 'reports.export', 'reports.print',
+  'secondary_box.view', 'secondary_box.manage',
   'audit.view',
   'users.manage', 'settings.manage', 'backups.manage', 'backups.restore',
 ] as const;
@@ -133,12 +135,12 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
   fund_manager: [
     'dashboard.view', 'members.view', 'subscriptions.view', 'receipts.view',
     'expenses.view', 'expenses.approve', 'reports.view', 'reports.export',
-    'reports.print', 'audit.view',
+    'reports.print', 'secondary_box.view', 'audit.view',
   ],
   secretary_general: [
     'dashboard.view', 'members.view', 'subscriptions.view', 'receipts.view',
     'expenses.view', 'expenses.approve', 'reports.view', 'reports.export',
-    'reports.print', 'audit.view',
+    'reports.print', 'secondary_box.view', 'audit.view',
   ],
   accountant: [
     'dashboard.view', 'members.view', 'members.add', 'members.edit',
@@ -146,18 +148,18 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     'subscriptions.edit', 'receipts.view', 'receipts.add', 'receipts.edit',
     'receipts.print', 'expenses.view', 'expenses.add', 'expenses.edit',
     'expenses.delete', 'expenses.print', 'reports.view', 'reports.export',
-    'reports.print',
+    'reports.print', 'secondary_box.view',
   ],
   treasurer: [
     'dashboard.view', 'members.view', 'subscriptions.view', 'subscriptions.pay',
     'receipts.view', 'receipts.add', 'receipts.print', 'expenses.view',
     'expenses.pay', 'expenses.print', 'reports.view', 'reports.export',
-    'reports.print',
+    'reports.print', 'secondary_box.view', 'secondary_box.manage',
   ],
   board_member: [
     'dashboard.view', 'members.view', 'subscriptions.view', 'receipts.view',
     'expenses.view', 'reports.view', 'reports.export', 'reports.print',
-    'audit.view',
+    'secondary_box.view', 'audit.view',
   ],
   member: [],
 };
@@ -213,6 +215,8 @@ function capabilitiesFor(role: string, permissions: Record<string, boolean>) {
     printExpenses: has('expenses.print'),
     exportReports: has('reports.export'),
     printReports: has('reports.print'),
+    viewSecondaryBox: has('secondary_box.view'),
+    manageSecondaryBox: has('secondary_box.manage'),
     manageUsers: has('users.manage'),
     manageSettings: has('settings.manage'),
     manageBackups: has('backups.manage'),
@@ -860,16 +864,47 @@ async function cashPosition(db: any = sql) {
       coalesce((select opening_balance from fund_settings where id = 'fund'), 0) as opening_balance,
       coalesce((select sum(amount) from fund_receipts), 0) as total_receipts,
       coalesce((select sum(amount) from fund_expense_requests where status = 'paid'), 0) as total_paid_expenses,
-      coalesce((select sum(amount) from fund_expense_requests where status = 'approved'), 0) as committed_pending`;
+      coalesce((select sum(amount) from fund_expense_requests where status = 'approved'), 0) as committed_pending,
+      coalesce((select sum(case when direction = 'to_primary' then amount_primary else -amount_primary end)
+                from fund_cash_transfers), 0) as transfers_net,
+      coalesce((select sum(amount_primary) from fund_cash_transfers
+                where direction = 'to_primary'), 0) as transfers_in,
+      coalesce((select sum(amount_primary) from fund_cash_transfers
+                where direction = 'to_secondary'), 0) as transfers_out`;
   const row = rows[0];
-  const cash = round2(Number(row.opening_balance) + Number(row.total_receipts) - Number(row.total_paid_expenses));
+  const cash = round2(
+    Number(row.opening_balance) + Number(row.total_receipts) -
+    Number(row.total_paid_expenses) + Number(row.transfers_net)
+  );
   return {
     opening_balance: round2(row.opening_balance),
     total_receipts: round2(row.total_receipts),
     total_paid_expenses: round2(row.total_paid_expenses),
+    transfers_in: round2(row.transfers_in),
+    transfers_out: round2(row.transfers_out),
+    transfers_net: round2(row.transfers_net),
     cash_balance: cash,
     committed_pending: round2(row.committed_pending),
     net_available: round2(cash - Number(row.committed_pending)),
+  };
+}
+
+async function secondaryBoxPosition(db: any = sql) {
+  const rows = await db`select
+      coalesce((select secondary_opening_balance from fund_settings where id = 'fund'), 0) as opening_balance,
+      coalesce(sum(case when direction = 'to_secondary' then amount_secondary else -amount_secondary end), 0) as net_movements,
+      coalesce(sum(case when direction = 'to_secondary' then amount_secondary else 0 end), 0) as total_in,
+      coalesce(sum(case when direction = 'to_primary' then amount_secondary else 0 end), 0) as total_out,
+      count(*) as transfer_count
+    from fund_cash_transfers`;
+  const row = rows[0];
+  return {
+    opening_balance: round2(row.opening_balance),
+    net_movements: round2(row.net_movements),
+    total_in: round2(row.total_in),
+    total_out: round2(row.total_out),
+    transfer_count: Number(row.transfer_count ?? 0),
+    balance: round2(Number(row.opening_balance) + Number(row.net_movements)),
   };
 }
 
@@ -1069,7 +1104,13 @@ async function cashLedger(from: string, to: string) {
   const priorReceipts = await sql`select coalesce(sum(amount), 0) as total from fund_receipts where receipt_date < ${from}`;
   const priorExpenses = await sql`select coalesce(sum(amount), 0) as total from fund_expense_requests
     where status = 'paid' and (disbursed_at at time zone 'Asia/Aden')::date < ${from}`;
-  const opening = round2(Number(settings.opening_balance) + Number(priorReceipts[0].total) - Number(priorExpenses[0].total));
+  const priorTransfers = await sql`select coalesce(sum(case when direction = 'to_primary'
+      then amount_primary else -amount_primary end), 0) as total
+    from fund_cash_transfers where transfer_date < ${from}`;
+  const opening = round2(
+    Number(settings.opening_balance) + Number(priorReceipts[0].total) -
+    Number(priorExpenses[0].total) + Number(priorTransfers[0].total)
+  );
 
   const receipts = await sql`
     select r.id, r.receipt_no, r.receipt_type, r.receipt_date as date,
@@ -1092,6 +1133,17 @@ async function cashLedger(from: string, to: string) {
       from fund_expense_requests e
      where e.status = 'paid'
        and (e.disbursed_at at time zone 'Asia/Aden')::date between ${from} and ${to}`;
+
+  const transfers = await sql`
+    select t.id, t.transfer_no, t.direction, t.transfer_date as date,
+           t.amount_primary, t.amount_secondary, t.rate, t.notes,
+           p.full_name as created_by_name, t.created_at
+      from fund_cash_transfers t
+      left join fund_user_profiles p on p.user_id = t.created_by
+     where t.transfer_date between ${from} and ${to}`;
+
+  const secondaryCurrency = settings.secondary_currency ?? 'ريال سعودي';
+  const secondaryText = (value: unknown) => `${round2(value).toLocaleString('en-US')} ${secondaryCurrency}`;
 
   const movements = [
     ...receipts.map((row: any) => ({
@@ -1122,6 +1174,24 @@ async function cashLedger(from: string, to: string) {
       credit: 0,
       created_at: row.created_at,
     })),
+    ...transfers.map((row: any) => {
+      const toSecondary = row.direction === 'to_secondary';
+      return {
+        id: row.id,
+        kind: 'transfer',
+        direction: row.direction,
+        date: row.date,
+        reference: `TRF-${String(row.transfer_no).padStart(4, '0')}`,
+        description: `${toSecondary ? 'تحويل إلى الخزينة الثانية' : 'تحويل من الخزينة الثانية'} (${secondaryText(row.amount_secondary)} — سعر ${Number(row.rate)})`,
+        party: 'الخزينة الثانية',
+        amount_secondary: round2(row.amount_secondary),
+        rate: Number(row.rate),
+        notes: row.notes,
+        debit: toSecondary ? round2(row.amount_primary) : 0,
+        credit: toSecondary ? 0 : round2(row.amount_primary),
+        created_at: row.created_at,
+      };
+    }),
   ].sort((a, b) =>
     String(a.date) === String(b.date)
       ? String(a.created_at).localeCompare(String(b.created_at))
@@ -1729,16 +1799,33 @@ app.get('/dashboard', async (c) => {
     select coalesce(sum(amount), 0) as total from public.fund_member_credit_ledger`;
   const memberCredits = round2(creditRows[0]?.total ?? 0);
   const rawPosition = data.position;
+  const transfersNet = Number(rawPosition.transfers_net ?? 0);
+  const cashBalance = round2(
+    Number(rawPosition.opening_balance) + Number(rawPosition.total_receipts) -
+    Number(rawPosition.total_paid_expenses) + transfersNet
+  );
   const position = {
     opening_balance: round2(rawPosition.opening_balance),
     total_receipts: round2(rawPosition.total_receipts),
     total_paid_expenses: round2(rawPosition.total_paid_expenses),
-    cash_balance: round2(Number(rawPosition.opening_balance) + Number(rawPosition.total_receipts) - Number(rawPosition.total_paid_expenses)),
+    transfers_in: round2(rawPosition.transfers_in ?? 0),
+    transfers_out: round2(rawPosition.transfers_out ?? 0),
+    transfers_net: round2(transfersNet),
+    cash_balance: cashBalance,
     committed_pending: round2(rawPosition.committed_pending),
-    net_available: round2(
-      Number(rawPosition.opening_balance) + Number(rawPosition.total_receipts) -
-      Number(rawPosition.total_paid_expenses) - Number(rawPosition.committed_pending)
-    ),
+    net_available: round2(cashBalance - Number(rawPosition.committed_pending)),
+  };
+  const rawSecondaryBox = data.secondary_box ?? {};
+  const secondaryBox = {
+    enabled: Boolean(settings.secondary_box_enabled),
+    currency: settings.secondary_currency ?? 'ريال سعودي',
+    exchange_rate: Number(settings.exchange_rate ?? 0),
+    opening_balance: round2(rawSecondaryBox.opening_balance ?? 0),
+    total_in: round2(rawSecondaryBox.total_in ?? 0),
+    total_out: round2(rawSecondaryBox.total_out ?? 0),
+    net_movements: round2(rawSecondaryBox.net_movements ?? 0),
+    transfer_count: Number(rawSecondaryBox.transfer_count ?? 0),
+    balance: round2(rawSecondaryBox.balance ?? 0),
   };
   const arrears = {
     total_arrears: round2(data.arrears.total_arrears),
@@ -1804,6 +1891,7 @@ app.get('/dashboard', async (c) => {
     approved_requests: approved,
     recent_receipts: recentReceipts,
     member_credits: memberCredits,
+    secondary_box: user.permissions['secondary_box.view'] ? secondaryBox : null,
     members: {
       total: Number(memberStatsRow.total ?? 0),
       active: Number(memberStatsRow.active ?? 0),
@@ -3500,6 +3588,172 @@ app.get('/reports/cash-ledger', async (c) => {
   return c.json(await cashLedger(from, to));
 });
 
+/* ---------------------------- Second cash box ----------------------------- */
+
+async function secondaryBoxPayload(from: string, to: string) {
+  const settings = await getSettings();
+  const position = await secondaryBoxPosition();
+  const priorRows = await sql`select coalesce(sum(case when direction = 'to_secondary'
+      then amount_secondary else -amount_secondary end), 0) as total
+    from fund_cash_transfers where transfer_date < ${from}`;
+  const periodOpening = round2(Number(settings.secondary_opening_balance ?? 0) + Number(priorRows[0].total));
+  const rows = await sql`
+    select t.id, t.transfer_no, t.direction, t.transfer_date, t.amount_primary,
+           t.amount_secondary, t.rate, t.notes, t.created_at,
+           p.full_name as created_by_name
+      from fund_cash_transfers t
+      left join fund_user_profiles p on p.user_id = t.created_by
+     where t.transfer_date between ${from} and ${to}
+     order by t.transfer_date asc, t.transfer_no asc`;
+  let running = periodOpening;
+  const movements = rows.map((row: any) => {
+    const signed = row.direction === 'to_secondary'
+      ? Number(row.amount_secondary)
+      : -Number(row.amount_secondary);
+    running = round2(running + signed);
+    return {
+      id: row.id,
+      transfer_no: Number(row.transfer_no),
+      reference: `TRF-${String(row.transfer_no).padStart(4, '0')}`,
+      direction: row.direction,
+      date: row.transfer_date,
+      amount_primary: round2(row.amount_primary),
+      amount_secondary: round2(row.amount_secondary),
+      rate: Number(row.rate),
+      notes: row.notes,
+      created_by_name: row.created_by_name,
+      created_at: row.created_at,
+      balance_after: running,
+    };
+  });
+  const rate = Number(settings.exchange_rate ?? 0);
+  return {
+    enabled: Boolean(settings.secondary_box_enabled),
+    currency: settings.secondary_currency ?? 'ريال سعودي',
+    primary_currency: settings.currency,
+    exchange_rate: rate,
+    from,
+    to,
+    opening_balance: position.opening_balance,
+    period_opening_balance: periodOpening,
+    balance: position.balance,
+    total_in: position.total_in,
+    total_out: position.total_out,
+    net_movements: position.net_movements,
+    transfer_count: position.transfer_count,
+    primary_equivalent: round2(position.balance * rate),
+    movements,
+  };
+}
+
+app.get('/secondary-box', async (c) => {
+  const user = await requireUser(c);
+  requireCap(user, 'secondary_box.view');
+  const { from, to } = defaultRange(c.req.query());
+  return c.json(await secondaryBoxPayload(from, to));
+});
+
+app.post('/secondary-box/transfers', async (c) => {
+  const user = await requireUser(c);
+  requireCap(user, 'secondary_box.manage');
+  const settings = await getSettings();
+  if (!settings.secondary_box_enabled) {
+    throw new HttpError(400, 'الخزينة الثانية غير مفعلة. فعّلها من إعدادات الصندوق أولاً');
+  }
+  const body = await c.req.json();
+  const direction = oneOf(body?.direction, ['to_secondary', 'to_primary'], { name: 'اتجاه التحويل' });
+  const amountInput = decimal(body?.amount, { name: 'مبلغ التحويل', min: 0.01, max: 1_000_000_000_000 });
+  if (!(amountInput > 0)) throw new HttpError(400, 'مبلغ التحويل يجب أن يكون أكبر من صفر');
+  const rate = body?.rate === undefined || body?.rate === null || body?.rate === ''
+    ? Number(settings.exchange_rate ?? 0)
+    : decimal(body.rate, { name: 'سعر الصرف', min: 0, max: 1_000_000 });
+  if (!(rate > 0)) throw new HttpError(400, 'أدخل سعر صرف صحيحاً أكبر من صفر');
+  const transferDate = isoDate(body?.transfer_date || todayISO(), { name: 'تاريخ التحويل' });
+  const notes = str(body?.notes, { name: 'ملاحظات التحويل', max: 500 });
+
+  // amount is entered in the source box currency.
+  const toSecondary = direction === 'to_secondary';
+  const amountPrimary = round2(toSecondary ? amountInput : amountInput * rate);
+  const amountSecondary = round2(toSecondary ? amountInput / rate : amountInput);
+  if (!(amountPrimary > 0) || !(amountSecondary > 0)) {
+    throw new HttpError(400, 'المبلغ صغير جداً بعد التحويل. أدخل مبلغاً أكبر');
+  }
+
+  const transfer = await sql.begin(async (tx: any) => {
+    // Serialize transfers so two simultaneous requests cannot overdraw a box.
+    await tx`select id from fund_settings where id = 'fund' for update`;
+    const box = await secondaryBoxPosition(tx);
+    const main = await cashPosition(tx);
+    if (toSecondary && amountPrimary > Number(main.cash_balance) + 0.005) {
+      throw new HttpError(400, `الرصيد النقدي في الصندوق الرئيسي لا يكفي. المتاح ${round2(main.cash_balance).toLocaleString('en-US')} فقط`);
+    }
+    if (!toSecondary && amountSecondary > Number(box.balance) + 0.005) {
+      throw new HttpError(400, `رصيد الخزينة الثانية لا يكفي. المتاح ${round2(box.balance).toLocaleString('en-US')} ${settings.secondary_currency ?? 'ريال سعودي'} فقط`);
+    }
+    const transferNo = await nextSequence(tx, 'cash_transfer');
+    const inserted = await tx`
+      insert into fund_cash_transfers
+        (transfer_no, direction, amount_primary, amount_secondary, rate, transfer_date, notes, created_by)
+      values (${transferNo}, ${direction}, ${amountPrimary}, ${amountSecondary}, ${rate},
+              ${transferDate}, ${notes}, ${user.id})
+      returning *`;
+    await audit(tx, user, 'تحويل بين الصندوقين', 'cash_transfer', inserted[0].id,
+      `تحويل رقم ${transferNo} — ${toSecondary ? 'إلى' : 'من'} الخزينة الثانية — ` +
+      `${amountPrimary.toLocaleString('en-US')} ${settings.currency} / ` +
+      `${amountSecondary.toLocaleString('en-US')} ${settings.secondary_currency ?? 'ريال سعودي'} — سعر ${rate}`);
+    return inserted[0];
+  });
+
+  return c.json({
+    transfer: {
+      ...transfer,
+      reference: `TRF-${String(transfer.transfer_no).padStart(4, '0')}`,
+      amount_primary: round2(transfer.amount_primary),
+      amount_secondary: round2(transfer.amount_secondary),
+      rate: Number(transfer.rate),
+    },
+    secondary_box: await secondaryBoxPosition(),
+    position: await cashPosition(),
+  }, 201);
+});
+
+app.delete('/secondary-box/transfers/:id', async (c) => {
+  const user = await requireUser(c);
+  requireCap(user, 'secondary_box.manage');
+  const id = c.req.param('id');
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new HttpError(400, 'رقم التحويل غير صالح');
+  const settings = await getSettings();
+
+  const deleted = await sql.begin(async (tx: any) => {
+    await tx`select id from fund_settings where id = 'fund' for update`;
+    const rows = await tx`select * from fund_cash_transfers where id = ${id} limit 1`;
+    if (!rows.length) throw new HttpError(404, 'التحويل غير موجود');
+    const transfer = rows[0];
+    const box = await secondaryBoxPosition(tx);
+    const main = await cashPosition(tx);
+    if (transfer.direction === 'to_secondary') {
+      if (Number(transfer.amount_secondary) > Number(box.balance) + 0.005) {
+        throw new HttpError(400, 'لا يمكن حذف التحويل لأن رصيد الخزينة الثانية أصبح أقل من المبلغ المحوّل');
+      }
+    } else if (Number(transfer.amount_primary) > Number(main.cash_balance) + 0.005) {
+      throw new HttpError(400, 'لا يمكن حذف التحويل لأن الرصيد النقدي للصندوق الرئيسي أصبح أقل من المبلغ المحوّل');
+    }
+    await tx`delete from fund_cash_transfers where id = ${id}`;
+    await audit(tx, user, 'حذف تحويل بين الصندوقين', 'cash_transfer', id,
+      `حذف تحويل رقم ${transfer.transfer_no} — ` +
+      `${round2(transfer.amount_primary).toLocaleString('en-US')} ${settings.currency} / ` +
+      `${round2(transfer.amount_secondary).toLocaleString('en-US')} ${settings.secondary_currency ?? 'ريال سعودي'}`);
+    return transfer;
+  });
+
+  return c.json({
+    ok: true,
+    deleted_id: deleted.id,
+    secondary_box: await secondaryBoxPosition(),
+    position: await cashPosition(),
+  });
+});
+
 app.get('/reports/arrears', async (c) => {
   const user = await requireUser(c);
   requireCap(user, 'reports.view');
@@ -4220,6 +4474,19 @@ app.patch('/settings', async (c) => {
   const secondaryEnabled = body?.secondary_enabled === undefined
     ? Boolean(current.secondary_enabled)
     : bool(body.secondary_enabled, false);
+  const secondaryBoxEnabled = body?.secondary_box_enabled === undefined
+    ? Boolean(current.secondary_box_enabled)
+    : bool(body.secondary_box_enabled, true);
+  const secondaryOpeningBalance = body?.secondary_opening_balance === undefined
+    ? round2(current.secondary_opening_balance ?? 0)
+    : round2(decimal(body.secondary_opening_balance, {
+        name: 'الرصيد الافتتاحي للخزينة الثانية',
+        min: 0,
+        max: 1_000_000_000_000,
+      }));
+  if (secondaryOpeningBalance < 0) {
+    throw new HttpError(400, 'الرصيد الافتتاحي للخزينة الثانية يجب أن يكون صفراً أو أكبر');
+  }
   let openingBalance = Number(current.opening_balance);
   if (body?.opening_balance !== undefined) {
     openingBalance = Number(body.opening_balance);
@@ -4262,7 +4529,10 @@ app.patch('/settings', async (c) => {
     await tx`update fund_settings set fund_name = ${fundName}, logo_url = ${logoFile},
       default_monthly_fee = ${defaultFee}, currency = ${currency},
       secondary_currency = ${secondaryCurrency}, exchange_rate = ${exchangeRate},
-      secondary_enabled = ${secondaryEnabled}, opening_balance = ${openingBalance},
+      secondary_enabled = ${secondaryEnabled},
+      secondary_box_enabled = ${secondaryBoxEnabled},
+      secondary_opening_balance = ${secondaryOpeningBalance},
+      opening_balance = ${openingBalance},
       allow_self_approval_demo = ${selfApproval}, allow_signups = ${allowSignups},
       auto_dues_enabled = ${autoDues}, cash_alert_threshold = ${cashAlertThreshold},
       commitment_alert_percent = ${commitmentAlertPercent},
@@ -4270,7 +4540,7 @@ app.patch('/settings', async (c) => {
       updated_at = now()
       where id = 'fund'`;
     await audit(tx, user, 'تحديث إعدادات الصندوق', 'settings', 'fund',
-      `الاسم: ${fundName} — الاشتراك: ${defaultFee} — الرصيد الافتتاحي: ${openingBalance} — الاستحقاقات التلقائية: ${autoDues ? 'مفعلة' : 'معطلة'} — العملة الثانية: ${secondaryEnabled ? `${secondaryCurrency} (1 = ${exchangeRate})` : 'معطلة'} — تنبيهات: نقدي ${cashAlertThreshold}، التزامات ${commitmentAlertPercent}%، اعتماد ${approvalAlertDays} أيام، تذكير يوم ${reminderDay}`);
+      `الاسم: ${fundName} — الاشتراك: ${defaultFee} — الرصيد الافتتاحي: ${openingBalance} — الاستحقاقات التلقائية: ${autoDues ? 'مفعلة' : 'معطلة'} — العملة الثانية: ${secondaryEnabled ? `${secondaryCurrency} (1 = ${exchangeRate})` : 'معطلة'} — الخزينة الثانية: ${secondaryBoxEnabled ? `مفعلة (رصيد افتتاحي ${secondaryOpeningBalance})` : 'معطلة'} — تنبيهات: نقدي ${cashAlertThreshold}، التزامات ${commitmentAlertPercent}%، اعتماد ${approvalAlertDays} أيام، تذكير يوم ${reminderDay}`);
   });
 
   return c.json({ settings: protocolSettings(await getSettings()) });
@@ -4474,6 +4744,7 @@ const RESTORE_ORDER = [
   'fund_receipts',
   'fund_receipt_allocations',
   'fund_member_credit_ledger',
+  'fund_cash_transfers',
   'fund_expense_requests',
   'fund_expense_approvals',
   'fund_attachments',
@@ -4530,6 +4801,7 @@ async function restoreSnapshot(payload: any, user: any) {
     await tx`delete from public.fund_reminder_logs`;
     await tx`delete from public.fund_expense_approvals`;
     await tx`delete from public.fund_member_credit_ledger`;
+    await tx`delete from public.fund_cash_transfers`;
     await tx`delete from public.fund_receipt_allocations`;
     await tx`delete from public.fund_receipts`;
     await tx`delete from public.fund_subscriptions`;

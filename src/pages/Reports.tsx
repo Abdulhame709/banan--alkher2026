@@ -68,6 +68,9 @@ interface ReportsSummary {
     net_available: number;
     committed_pending: number;
     opening_balance: number;
+    transfers_in?: number;
+    transfers_out?: number;
+    transfers_net?: number;
   };
   arrears: { total_arrears: number; open_months: number; total_accrued: number; total_collected: number };
   period: { receipts: number; paid_expenses: number; net: number };
@@ -586,7 +589,7 @@ export function ReportsPage() {
               <div className="report-head">
                 <div>
                   <h3>كشف حركة الصندوق النقدي</h3>
-                  <p>يشمل المقبوضات والمصروفات المدفوعة فقط — بدون المتأخرات غير المحصلة.</p>
+                  <p>يشمل المقبوضات والمصروفات المدفوعة والتحويلات بين الصندوقين — بدون المتأخرات غير المحصلة.</p>
                 </div>
                 <div className="report-head-metrics">
                   <div><span>رصيد افتتاحي</span><strong><DualAmount value={cash.opening_balance} inline /></strong></div>
@@ -627,7 +630,12 @@ export function ReportsPage() {
                           <td className="mono">{movement.reference}</td>
                           <td>
                             <span className="movement-type">
-                              <i className={movement.kind === 'receipt' ? 'dot-emerald' : 'dot-gold'} />
+                              <i className={
+                                movement.kind === 'receipt' ||
+                                (movement.kind === 'transfer' && movement.direction === 'to_primary')
+                                  ? 'dot-emerald'
+                                  : 'dot-gold'
+                              } />
                               {movement.description}
                             </span>
                           </td>
